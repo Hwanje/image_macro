@@ -1,0 +1,3 @@
+-keep class com.imagemacro.model.** { *; }
+-keepattributes Signature
+-keepattributes *Annotation*

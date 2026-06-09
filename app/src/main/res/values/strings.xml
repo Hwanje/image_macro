@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">이미지 매크로</string>
+    <string name="accessibility_desc">탭·스와이프 등 매크로 동작을 화면에서 자동 수행합니다. 사용자가 만든 매크로 실행에만 사용됩니다.</string>
+</resources>
