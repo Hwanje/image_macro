@@ -18,7 +18,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
+import android.widget.Toast
 import com.imagemacro.R
+import com.imagemacro.capture.CaptureBus
 import com.imagemacro.capture.ScreenCaptureManager
 import com.imagemacro.engine.MacroEngine
 import com.imagemacro.model.Macro
@@ -44,13 +46,18 @@ class MacroService : Service() {
     private var capture: ScreenCaptureManager? = null
     private var engine: MacroEngine? = null
     private var macro: Macro? = null
+    private var captureSession: CaptureSession? = null
+    private var captureOnly = false
 
     companion object {
         const val ACTION_START = "start"
         const val ACTION_STOP = "stop"
+        const val ACTION_START_CAPTURE = "start_capture"  // 프로젝션 토큰과 함께, 캡처 전용 모드
+        const val ACTION_CAPTURE = "capture"              // 실행중인 서비스에 캡처 세션 요청
         const val EXTRA_RESULT_CODE = "code"
         const val EXTRA_DATA = "data"
         const val EXTRA_MACRO_ID = "macro_id"
+        const val EXTRA_RETURN_MACRO_ID = "return_macro_id"
 
         private const val CHANNEL_ID = "macro_fg"
         private const val NOTI_ID = 1001
@@ -60,16 +67,31 @@ class MacroService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopEverything(); return START_NOT_STICKY }
-            ACTION_START -> startWithProjection(intent)
+            ACTION_START -> startWithProjection(intent, captureOnly = false)
+            ACTION_START_CAPTURE -> startWithProjection(intent, captureOnly = true)
+            ACTION_CAPTURE -> beginCapture(intent.getStringExtra(EXTRA_RETURN_MACRO_ID))
         }
         return START_NOT_STICKY
     }
 
-    private fun startWithProjection(intent: Intent) {
+    private fun startWithProjection(intent: Intent, captureOnly: Boolean) {
+        this.captureOnly = captureOnly
         startAsForeground()
+
+        // 재시작이면 이전 세션/프로젝션을 먼저 정리
+        captureSession?.dismiss(); captureSession = null
+        engine?.stop(); engine = null
+        capture?.release(); capture = null
+        try { projection?.stop() } catch (_: Exception) {}
+        projection = null
 
         val code = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
         @Suppress("DEPRECATION")
@@ -81,6 +103,13 @@ class MacroService : Service() {
         if (projection == null) { stopEverything(); return }
 
         capture = ScreenCaptureManager(this, projection!!).also { it.start() }
+        isRunning = true
+
+        if (captureOnly) {
+            // 편집기에서 요청한 캡처 전용 모드: 패널 없이 바로 셔터를 띄운다
+            beginCapture(intent.getStringExtra(EXTRA_RETURN_MACRO_ID))
+            return
+        }
 
         val id = intent.getStringExtra(EXTRA_MACRO_ID)
         macro = id?.let { MacroStore.find(this, it) } ?: MacroStore.load(this).firstOrNull()
@@ -92,16 +121,52 @@ class MacroService : Service() {
             onFinished = { setToggleLabel(false) }
         )
 
-        isRunning = true
         showOverlay()
         updateTitle()
+    }
+
+    // ---------------- 오버레이 캡처 세션 ----------------
+
+    /** 패널을 숨기고 셔터→영역선택→템플릿 저장 세션을 시작한다. */
+    private fun beginCapture(returnMacroId: String?) {
+        val cap = capture
+        if (cap == null) { if (!isRunning) stopSelf(); return }
+        if (captureSession != null) return
+
+        engine?.takeIf { it.isRunning }?.let {
+            it.stop(); setToggleLabel(false); statusText?.text = "정지됨"
+        }
+        overlay?.visibility = View.GONE
+
+        captureSession = CaptureSession(this, windowManager, cap) { name ->
+            captureSession = null
+            if (name != null) {
+                val msg = if (returnMacroId == null)
+                    "템플릿 저장됨 — 단계 편집의 '저장된 템플릿'에서 사용하세요"
+                else "템플릿 저장됨"
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            }
+            CaptureBus.deliver(name)
+            if (returnMacroId != null) bringEditorToFront(returnMacroId)
+            if (this.captureOnly) stopEverything()
+            else overlay?.visibility = View.VISIBLE
+        }.also { it.start() }
+    }
+
+    private fun bringEditorToFront(macroId: String) {
+        val i = Intent(this, MacroEditorActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(MacroEditorActivity.EXTRA_MACRO_ID, macroId)
+        }
+        startActivity(i)
     }
 
     // ---------------- 오버레이 ----------------
 
     private fun showOverlay() {
-        if (overlay != null) return
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        overlay?.let { it.visibility = View.VISIBLE; return }
         val view = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null)
 
         statusText = view.findViewById(R.id.txtStatus)
@@ -110,6 +175,7 @@ class MacroService : Service() {
 
         view.findViewById<View>(R.id.btnToggle).setOnClickListener { toggleRun() }
         view.findViewById<View>(R.id.btnEdit).setOnClickListener { openEditor() }
+        view.findViewById<View>(R.id.btnCapture).setOnClickListener { beginCapture(null) }
         view.findViewById<View>(R.id.btnClose).setOnClickListener { stopEverything() }
 
         val params = WindowManager.LayoutParams(
@@ -219,6 +285,7 @@ class MacroService : Service() {
 
     private fun stopEverything() {
         isRunning = false
+        captureSession?.dismiss(); captureSession = null
         engine?.stop(); engine = null
         capture?.release(); capture = null
         try { projection?.stop() } catch (_: Exception) {}

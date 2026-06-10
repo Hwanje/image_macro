@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/overlay_bg"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:padding="8dp">
+
+    <TextView
+        android:id="@+id/dragHandle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="6dp"
+        android:text="⠿"
+        android:textColor="#9AA0A6"
+        android:textSize="18sp" />
+
+    <TextView
+        android:id="@+id/btnShoot"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:background="@drawable/btn_pill"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="8dp"
+        android:text="📷 캡처"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/btnShutterCancel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:background="@drawable/btn_pill"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="8dp"
+        android:text="✕"
+        android:textColor="#FF8A80" />
+</LinearLayout>

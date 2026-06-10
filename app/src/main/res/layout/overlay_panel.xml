@@ -73,6 +73,17 @@
             android:textColor="#FFFFFF" />
 
         <TextView
+            android:id="@+id/btnCapture"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/btn_pill"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="8dp"
+            android:text="📷"
+            android:textColor="#FFFFFF" />
+
+        <TextView
             android:id="@+id/btnClose"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

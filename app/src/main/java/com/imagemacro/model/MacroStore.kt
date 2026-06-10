@@ -66,4 +66,10 @@ object MacroStore {
         if (!f.exists()) return null
         return BitmapFactory.decodeFile(f.absolutePath)
     }
+
+    /** 저장된 템플릿 PNG 목록 (최신순) */
+    fun listTemplates(ctx: Context): List<File> =
+        templatesDir(ctx).listFiles { f -> f.isFile && f.name.endsWith(".png") }
+            ?.sortedByDescending { it.lastModified() }
+            ?: emptyList()
 }

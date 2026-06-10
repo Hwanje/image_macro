@@ -7,6 +7,9 @@
 
 - **이미지 감지**: `MediaProjection`으로 화면을 캡처하고, 등록한 템플릿 이미지를
   그레이스케일 ZNCC(정규화 상관계수) 매칭으로 화면에서 찾습니다.
+- **오버레이 캡처**: 다른 앱(게임) 위에서 떠다니는 **📷 셔터 버튼**을 눌러
+  현재 화면을 얼리고, 드래그로 영역을 잘라 바로 템플릿으로 저장합니다.
+  스크린샷을 따로 찍어 갤러리에서 고를 필요가 없습니다.
 - **알고리즘(스텝) 구성**: 단계 목록으로 매크로를 만듭니다.
   - 탭(좌표), 스와이프, 대기, 메시지, 뒤로가기, 홈
   - **이미지 찾아 탭** — 화면에서 이미지를 찾으면 그 위치를 탭
@@ -60,11 +63,19 @@ export ANDROID_HOME=<Android SDK 경로>
 1. 앱 실행 → **① 다른 앱 위에 표시 권한 허용**, **② 접근성 서비스 켜기**
 2. **+** 로 새 매크로 생성 → 이름/반복횟수 설정
 3. **＋ 단계 추가** 로 동작을 쌓습니다.
-   - "이미지 찾아 탭" 추가 → **🖼 이미지 선택/캡처** 로 대상 게임/앱 스크린샷을 골라
-     찾을 부분을 드래그해 템플릿으로 저장 → 임계값(%) 조절
+   - "이미지 찾아 탭" 추가 → **🖼 이미지 선택/캡처** → 가져오기 방법 선택:
+     - **📷 화면 캡처 (다른 앱 위에서)** — 앱이 내려가고 떠다니는 📷 셔터가 뜹니다.
+       대상 게임/앱 화면을 띄우고 셔터를 누르면 화면이 얼고, 찾을 부분을
+       드래그해 **✓ 저장**하면 템플릿이 등록되며 편집기로 자동 복귀합니다.
+     - **🖼 갤러리/스크린샷에서 잘라내기** — 기존 방식
+     - **📁 저장된 템플릿에서 선택** — 이전에 캡처해 둔 템플릿 재사용
    - "반복"/"이미지가 보이면" 단계는 저장 후 **탭**하면 하위 단계로 들어가 중첩 구성
 4. **💾 저장**
 5. 목록에서 **▶ 실행** → 화면 캡처 동의 → 오버레이 패널의 **▶ 시작**
+
+> 실행 중에도 오버레이 패널의 **📷** 버튼으로 언제든 화면을 캡처해 템플릿을
+> 추가해 둘 수 있습니다(매크로는 자동 정지). 저장된 템플릿은 단계 편집의
+> "📁 저장된 템플릿에서 선택"으로 사용합니다.
 
 > 템플릿 이미지는 기기 해상도와 같은 스크린샷을 사용하면 매칭 정확도가 가장 높습니다.
 
@@ -74,8 +85,8 @@ export ANDROID_HOME=<Android SDK 경로>
 app/src/main/java/com/imagemacro/
 ├─ model/        Macro·Step 데이터 모델, JSON 저장소(MacroStore)
 ├─ engine/       TemplateMatcher(이미지 매칭), MacroEngine(스텝 실행)
-├─ capture/      ScreenCaptureManager(MediaProjection), ProjectionRequestActivity
-├─ service/      MacroService(오버레이+포그라운드), MacroAccessibilityService(제스처)
+├─ capture/      ScreenCaptureManager(MediaProjection), ProjectionRequestActivity, CaptureBus
+├─ service/      MacroService(오버레이+포그라운드), CaptureSession(오버레이 캡처), MacroAccessibilityService(제스처)
 ├─ ui/           MainActivity, MacroEditorActivity, 좌표/크롭 액티비티, 어댑터
 └─ util/         PermissionUtil
 ```

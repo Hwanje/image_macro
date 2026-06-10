@@ -1,11 +1,18 @@
 package com.imagemacro.ui
 
 import android.content.Intent
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -14,11 +21,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.imagemacro.capture.CaptureBus
+import com.imagemacro.capture.ProjectionRequestActivity
 import com.imagemacro.databinding.ActivityEditorBinding
 import com.imagemacro.model.Macro
 import com.imagemacro.model.MacroStore
 import com.imagemacro.model.Step
 import com.imagemacro.model.StepType
+import com.imagemacro.service.MacroService
+import com.imagemacro.util.PermissionUtil
+import java.io.File
 
 /**
  * 매크로 편집기. 단계(스텝)를 추가/수정/정렬/삭제하며,
@@ -36,6 +48,7 @@ class MacroEditorActivity : AppCompatActivity() {
 
     private var pendingPoint: ((Int, Int) -> Unit)? = null
     private var pendingTemplate: ((String) -> Unit)? = null
+    private var awaitingCapture = false
 
     private val pointLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -105,6 +118,14 @@ class MacroEditorActivity : AppCompatActivity() {
 
     override fun onBackPressed() {
         if (navStack.size > 1) goUp() else super.onBackPressed()
+    }
+
+    override fun onDestroy() {
+        if (awaitingCapture) {
+            CaptureBus.onResult = null
+            awaitingCapture = false
+        }
+        super.onDestroy()
     }
 
     private fun onStepTap(pos: Int) {
@@ -263,8 +284,96 @@ class MacroEditorActivity : AppCompatActivity() {
     }
 
     private fun pickTemplate(cb: (String) -> Unit) {
-        pendingTemplate = cb
-        cropLauncher.launch(Intent(this, RegionCropActivity::class.java))
+        AlertDialog.Builder(this)
+            .setTitle("템플릿 이미지 가져오기")
+            .setItems(arrayOf(
+                "📷 화면 캡처 (다른 앱 위에서)",
+                "🖼 갤러리/스크린샷에서 잘라내기",
+                "📁 저장된 템플릿에서 선택"
+            )) { _, w ->
+                when (w) {
+                    0 -> overlayCapture(cb)
+                    1 -> {
+                        pendingTemplate = cb
+                        cropLauncher.launch(Intent(this, RegionCropActivity::class.java))
+                    }
+                    2 -> pickSavedTemplate(cb)
+                }
+            }
+            .setNegativeButton("취소", null)
+            .show()
+    }
+
+    /**
+     * 다른 앱 위에서 직접 캡처: 앱을 내리고 떠다니는 📷 셔터를 띄운다.
+     * 캡처가 끝나면 서비스가 CaptureBus 로 결과를 주고 편집기를 다시 앞으로 가져온다.
+     */
+    private fun overlayCapture(cb: (String) -> Unit) {
+        if (!PermissionUtil.canDrawOverlay(this)) {
+            Toast.makeText(this, "'다른 앱 위에 표시' 권한을 먼저 허용하세요", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")))
+            return
+        }
+        awaitingCapture = true
+        CaptureBus.onResult = { name ->
+            awaitingCapture = false
+            if (name != null && !isFinishing && !isDestroyed) cb(name)
+        }
+        if (MacroService.isRunning) {
+            // 프로젝션이 이미 살아있으면 바로 캡처 세션 요청
+            startService(Intent(this, MacroService::class.java).apply {
+                action = MacroService.ACTION_CAPTURE
+                putExtra(MacroService.EXTRA_RETURN_MACRO_ID, macro.id)
+            })
+            moveTaskToBack(true)
+        } else {
+            // 화면 캡처 동의부터 받는다 (허용되면 캡처 전용 서비스가 셔터를 띄움)
+            startActivity(Intent(this, ProjectionRequestActivity::class.java).apply {
+                putExtra(ProjectionRequestActivity.EXTRA_CAPTURE_MODE, true)
+                putExtra(ProjectionRequestActivity.EXTRA_MACRO_ID, macro.id)
+            })
+        }
+    }
+
+    private fun pickSavedTemplate(cb: (String) -> Unit) {
+        val files = MacroStore.listTemplates(this)
+        if (files.isEmpty()) {
+            Toast.makeText(this, "저장된 템플릿이 없습니다. '📷 화면 캡처'로 만들어 보세요.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val density = resources.displayMetrics.density
+        val thumb = (56 * density).toInt()
+        val pad = (10 * density).toInt()
+        val adapter = object : ArrayAdapter<File>(this, 0, files) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val row = convertView as? LinearLayout ?: LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(pad, pad, pad, pad)
+                    addView(ImageView(context).apply {
+                        layoutParams = LinearLayout.LayoutParams(thumb, thumb)
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                    })
+                    addView(TextView(context).apply {
+                        layoutParams = LinearLayout.LayoutParams(
+                            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                        ).apply { marginStart = pad }
+                    })
+                }
+                val f = getItem(position)!!
+                val bmp = BitmapFactory.decodeFile(f.absolutePath)
+                (row.getChildAt(0) as ImageView).setImageBitmap(bmp)
+                (row.getChildAt(1) as TextView).text =
+                    if (bmp != null) "${f.name}\n${bmp.width}×${bmp.height}" else f.name
+                return row
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("저장된 템플릿")
+            .setAdapter(adapter) { _, w -> cb(files[w].name) }
+            .setNegativeButton("취소", null)
+            .show()
     }
 
     // ---------------- 다이얼로그 빌더 헬퍼 ----------------
