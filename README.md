@@ -19,6 +19,8 @@
 - **오버레이 컨트롤 패널**: 다른 앱 위에 떠 있는 드래그 가능한 패널에서
   **▶ 시작 / ■ 정지 / ✎ 수정 / ✕ 닫기**
 - **실제 동작 수행**: 접근성 서비스(`AccessibilityService`)의 제스처 디스패치로 탭·스와이프 실행
+- **인앱 자동 업데이트**: 앱 실행 시 GitHub 최신 릴리스를 확인하고,
+  새 버전이 있으면 앱 안에서 APK를 내려받아 바로 설치를 안내합니다.
 
 ## 권한
 
@@ -28,6 +30,8 @@
 | 접근성 서비스 | 탭/스와이프/뒤로·홈 동작 수행 |
 | 화면 캡처 (MediaProjection) | 이미지 감지를 위한 화면 캡처 (실행 시마다 동의) |
 | 알림 (POST_NOTIFICATIONS) | 포그라운드 서비스 알림 |
+| 인터넷 (INTERNET) | GitHub 릴리스 업데이트 확인/다운로드 |
+| 앱 설치 요청 (REQUEST_INSTALL_PACKAGES) | 내려받은 업데이트 APK 설치 |
 
 ## 설치법
 
@@ -79,6 +83,29 @@ export ANDROID_HOME=<Android SDK 경로>
 
 > 템플릿 이미지는 기기 해상도와 같은 스크린샷을 사용하면 매칭 정확도가 가장 높습니다.
 
+## 업데이트 배포 방법 (개발자용)
+
+앱은 실행 시 `Hwanje/image_macro` 저장소의 **최신 릴리스**를 확인합니다.
+새 버전을 배포하려면:
+
+1. `app/build.gradle.kts` 의 `versionCode` 를 올리고 `versionName` 을 새 버전(예: `1.2`)으로 변경
+2. APK 빌드 (`./gradlew :app:assembleDebug` 또는 release 빌드)
+3. GitHub 에서 **Releases → Draft a new release** 로 릴리스 생성
+   - 태그: `v` + versionName 과 동일하게 (예: **`v1.2`**)
+   - APK 파일을 릴리스 **에셋으로 첨부** (`.apk` 확장자 필수)
+   - 릴리스 본문(설명)은 업데이트 대화상자의 "변경 사항"으로 표시됩니다
+4. 사용자가 구버전 앱을 실행하면 업데이트 안내가 뜨고, 앱 안에서 내려받아 설치됩니다
+
+> ⚠️ 업데이트(덮어쓰기) 설치는 **기존 앱과 서명이 같아야** 합니다.
+> 항상 같은 키(예: 같은 PC의 debug keystore, 또는 release keystore)로 빌드한 APK를 올리세요.
+> 서명이 다르면 기기에서 기존 앱을 삭제 후 재설치해야 합니다.
+
+```bash
+# gh CLI 사용 시 한 번에:
+gh release create v1.2 app/build/outputs/apk/debug/app-debug.apk \
+  --title "v1.2" --notes "변경 사항 요약"
+```
+
 ## 구조
 
 ```
@@ -88,6 +115,7 @@ app/src/main/java/com/imagemacro/
 ├─ capture/      ScreenCaptureManager(MediaProjection), ProjectionRequestActivity, CaptureBus
 ├─ service/      MacroService(오버레이+포그라운드), CaptureSession(오버레이 캡처), MacroAccessibilityService(제스처)
 ├─ ui/           MainActivity, MacroEditorActivity, 좌표/크롭 액티비티, 어댑터
+├─ update/       UpdateManager(GitHub 릴리스 확인·APK 다운로드·설치)
 └─ util/         PermissionUtil
 ```
 

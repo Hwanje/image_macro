@@ -5,15 +5,22 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.ViewGroup
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.imagemacro.capture.ProjectionRequestActivity
 import com.imagemacro.databinding.ActivityMainBinding
 import com.imagemacro.model.Macro
 import com.imagemacro.model.MacroStore
+import com.imagemacro.update.UpdateManager
 import com.imagemacro.util.PermissionUtil
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
@@ -42,6 +49,80 @@ class MainActivity : AppCompatActivity() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 99)
+        }
+
+        checkForUpdate()
+    }
+
+    /** 앱 실행 시 GitHub 최신 릴리스를 확인하고 새 버전이 있으면 업데이트를 제안한다 */
+    private fun checkForUpdate() {
+        lifecycleScope.launch {
+            val info = UpdateManager.checkForUpdate(this@MainActivity) ?: return@launch
+            if (isFinishing || isDestroyed) return@launch
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("업데이트 알림")
+                .setMessage(
+                    buildString {
+                        append("새 버전 v${info.versionName}이(가) 있습니다.\n지금 업데이트할까요?")
+                        if (info.notes.isNotBlank()) {
+                            append("\n\n변경 사항:\n${info.notes.trim()}")
+                        }
+                    }
+                )
+                .setPositiveButton("업데이트") { _, _ -> startUpdate(info) }
+                .setNegativeButton("나중에", null)
+                .show()
+        }
+    }
+
+    private fun startUpdate(info: UpdateManager.ReleaseInfo) {
+        if (!UpdateManager.canInstallPackages(this)) {
+            Toast.makeText(this, "'이 출처 허용'을 켠 뒤 다시 시도하세요", Toast.LENGTH_LONG).show()
+            UpdateManager.openInstallPermissionSettings(this)
+            return
+        }
+
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+        }
+        val percentText = TextView(this)
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, 0)
+            addView(progressBar, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(percentText)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("업데이트 다운로드 중")
+            .setView(container)
+            .setCancelable(false)
+            .show()
+
+        lifecycleScope.launch {
+            try {
+                val apk = UpdateManager.downloadApk(this@MainActivity, info) { p ->
+                    runOnUiThread {
+                        if (p >= 0) {
+                            progressBar.isIndeterminate = false
+                            progressBar.progress = p
+                            percentText.text = "$p%"
+                        } else {
+                            progressBar.isIndeterminate = true
+                        }
+                    }
+                }
+                dialog.dismiss()
+                UpdateManager.installApk(this@MainActivity, apk)
+            } catch (e: Exception) {
+                dialog.dismiss()
+                Toast.makeText(
+                    this@MainActivity,
+                    "업데이트 다운로드 실패: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
