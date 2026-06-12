@@ -43,6 +43,7 @@ class MainActivity : AppCompatActivity() {
 
         b.fabAdd.setOnClickListener { openEditor(null) }
         b.btnOverlay.setOnClickListener { requestOverlay() }
+        b.btnOverlayBuild.setOnClickListener { startOverlayBuilder() }
         b.btnAccessibility.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -179,6 +180,28 @@ class MainActivity : AppCompatActivity() {
         }
         startActivity(i)
         Toast.makeText(this, "오버레이 패널에서 ▶ 시작을 누르세요", Toast.LENGTH_LONG).show()
+    }
+
+    /**
+     * 새 매크로를 만들고 곧바로 오버레이 빌더를 띄운다.
+     * 다른 앱으로 전환한 뒤 떠 있는 패널의 ＋탭 / ＋이미지 로 단계를 쌓을 수 있다.
+     */
+    private fun startOverlayBuilder() {
+        if (!PermissionUtil.canDrawOverlay(this)) {
+            Toast.makeText(this, "먼저 '다른 앱 위에 표시' 권한을 허용하세요", Toast.LENGTH_SHORT).show()
+            requestOverlay(); return
+        }
+        val macro = Macro(name = "오버레이 매크로")
+        MacroStore.upsert(this, macro)
+        val i = Intent(this, ProjectionRequestActivity::class.java).apply {
+            putExtra(ProjectionRequestActivity.EXTRA_MACRO_ID, macro.id)
+        }
+        startActivity(i)
+        Toast.makeText(
+            this,
+            "대상 앱으로 이동한 뒤, 떠 있는 패널의 ＋탭 위치 / ＋이미지 찾아 탭 으로 단계를 추가하세요",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun confirmDelete(macro: Macro) {

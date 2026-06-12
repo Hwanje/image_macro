@@ -41,6 +41,14 @@
             android:layout_marginTop="8dp"
             android:text="② 접근성 서비스 켜기" />
 
+        <Button
+            android:id="@+id/btnOverlayBuild"
+            style="@style/Widget.AppCompat.Button.Colored"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="③ 앱 위에서 매크로 만들기 (오버레이 녹화)" />
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

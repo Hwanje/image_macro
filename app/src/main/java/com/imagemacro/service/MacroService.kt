@@ -7,6 +7,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -17,6 +19,7 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import com.imagemacro.R
@@ -25,6 +28,8 @@ import com.imagemacro.capture.ScreenCaptureManager
 import com.imagemacro.engine.MacroEngine
 import com.imagemacro.model.Macro
 import com.imagemacro.model.MacroStore
+import com.imagemacro.model.Step
+import com.imagemacro.model.StepType
 import com.imagemacro.ui.MacroEditorActivity
 import kotlin.math.abs
 
@@ -48,6 +53,8 @@ class MacroService : Service() {
     private var macro: Macro? = null
     private var captureSession: CaptureSession? = null
     private var captureOnly = false
+    private var captureRecordMode = false   // 캡처 후 '이미지 찾아 탭' 단계까지 추가
+    private var pointOverlay: View? = null   // 탭 좌표 녹화용 전체화면 오버레이
 
     companion object {
         const val ACTION_START = "start"
@@ -127,11 +134,15 @@ class MacroService : Service() {
 
     // ---------------- 오버레이 캡처 세션 ----------------
 
-    /** 패널을 숨기고 셔터→영역선택→템플릿 저장 세션을 시작한다. */
-    private fun beginCapture(returnMacroId: String?) {
+    /**
+     * 패널을 숨기고 셔터→영역선택→템플릿 저장 세션을 시작한다.
+     * record=true 면 저장된 템플릿으로 '이미지 찾아 탭' 단계까지 현재 매크로에 추가한다.
+     */
+    private fun beginCapture(returnMacroId: String?, record: Boolean = false) {
         val cap = capture
         if (cap == null) { if (!isRunning) stopSelf(); return }
         if (captureSession != null) return
+        captureRecordMode = record
 
         engine?.takeIf { it.isRunning }?.let {
             it.stop(); setToggleLabel(false); statusText?.text = "정지됨"
@@ -140,7 +151,11 @@ class MacroService : Service() {
 
         captureSession = CaptureSession(this, windowManager, cap) { name ->
             captureSession = null
-            if (name != null) {
+            val wasRecord = captureRecordMode
+            captureRecordMode = false
+            if (name != null && wasRecord) {
+                appendStep(Step(type = StepType.FIND_TAP, templateName = name))
+            } else if (name != null) {
                 val msg = if (returnMacroId == null)
                     "템플릿 저장됨 — 단계 편집의 '저장된 템플릿'에서 사용하세요"
                 else "템플릿 저장됨"
@@ -151,6 +166,66 @@ class MacroService : Service() {
             if (this.captureOnly) stopEverything()
             else overlay?.visibility = View.VISIBLE
         }.also { it.start() }
+    }
+
+    // ---------------- 앱 위에서 단계 만들기 (오버레이 빌더) ----------------
+
+    /** 패널을 숨기고 전체화면 오버레이를 띄워 탭할 좌표 한 점을 녹화한다. */
+    private fun beginPointPick() {
+        if (pointOverlay != null) return
+        overlay?.visibility = View.GONE
+
+        val pick = PointPickView(this,
+            onPicked = { x, y ->
+                removePointPick()
+                appendStep(Step(type = StepType.TAP, x = x, y = y))
+                overlay?.visibility = View.VISIBLE
+            },
+            onCancel = {
+                removePointPick()
+                overlay?.visibility = View.VISIBLE
+            }
+        )
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0; y = 0
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        windowManager.addView(pick, params)
+        pointOverlay = pick
+        Toast.makeText(this, "탭할 위치를 누르세요 (이 매크로 실행 시 그 위치를 탭합니다)", Toast.LENGTH_LONG).show()
+    }
+
+    private fun removePointPick() {
+        pointOverlay?.let { try { windowManager.removeView(it) } catch (_: Exception) {} }
+        pointOverlay = null
+    }
+
+    /** 현재 매크로(없으면 새로 생성)에 단계를 추가하고 저장한다. */
+    private fun appendStep(step: Step) {
+        // 편집기에서 바뀐 내용을 덮어쓰지 않도록 저장소의 최신본을 기준으로 추가
+        val base = macro?.let { MacroStore.find(this, it.id) } ?: macro
+            ?: Macro(name = "오버레이 매크로").also { MacroStore.upsert(this, it) }
+        base.steps.add(step)
+        MacroStore.upsert(this, base)
+        macro = base
+        titleText?.text = base.name
+        statusText?.text = "단계 추가됨: ${step.summary()}  (총 ${base.steps.size}개)"
+        setToggleLabel(false)
     }
 
     private fun bringEditorToFront(macroId: String) {
@@ -177,6 +252,9 @@ class MacroService : Service() {
         view.findViewById<View>(R.id.btnEdit).setOnClickListener { openEditor() }
         view.findViewById<View>(R.id.btnCapture).setOnClickListener { beginCapture(null) }
         view.findViewById<View>(R.id.btnClose).setOnClickListener { stopEverything() }
+        // 앱 위에서 바로 단계를 추가하는 빌드 컨트롤
+        view.findViewById<View>(R.id.btnAddTap).setOnClickListener { beginPointPick() }
+        view.findViewById<View>(R.id.btnAddFind).setOnClickListener { beginCapture(null, record = true) }
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -285,6 +363,7 @@ class MacroService : Service() {
 
     private fun stopEverything() {
         isRunning = false
+        removePointPick()
         captureSession?.dismiss(); captureSession = null
         engine?.stop(); engine = null
         capture?.release(); capture = null
@@ -299,5 +378,56 @@ class MacroService : Service() {
     override fun onDestroy() {
         stopEverything()
         super.onDestroy()
+    }
+
+    /**
+     * 반투명 전체화면 오버레이. 다른 앱 위에서 한 점을 눌러 탭 좌표를 녹화한다.
+     * 화면이 비치도록 반투명이며, 상단의 '취소'를 누르면 녹화를 중단한다.
+     */
+    private class PointPickView(
+        ctx: Context,
+        private val onPicked: (Int, Int) -> Unit,
+        private val onCancel: () -> Unit
+    ) : View(ctx) {
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        private var px = -1f; private var py = -1f
+        private val cancelRect = android.graphics.RectF()
+
+        init { setBackgroundColor(Color.argb(90, 0, 0, 0)) }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.action) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    px = event.x; py = event.y; invalidate()
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (cancelRect.contains(event.x, event.y)) { onCancel(); return true }
+                    onPicked(event.x.toInt(), event.y.toInt())
+                }
+            }
+            return true
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            // 안내 + 취소 버튼
+            paint.color = Color.WHITE; paint.textSize = 44f; paint.style = android.graphics.Paint.Style.FILL
+            canvas.drawText("탭할 위치를 누르세요", 48f, 120f, paint)
+            cancelRect.set(width - 220f, 60f, width - 40f, 140f)
+            paint.color = Color.parseColor("#33000000")
+            canvas.drawRoundRect(cancelRect, 16f, 16f, paint)
+            paint.color = Color.parseColor("#FF8A80"); paint.textSize = 40f
+            canvas.drawText("✕ 취소", width - 200f, 112f, paint)
+            // 선택 표시
+            if (px >= 0) {
+                paint.color = Color.parseColor("#FF5252"); paint.style = android.graphics.Paint.Style.STROKE
+                paint.strokeWidth = 6f
+                canvas.drawCircle(px, py, 36f, paint)
+                paint.style = android.graphics.Paint.Style.FILL
+                canvas.drawCircle(px, py, 8f, paint)
+                paint.color = Color.WHITE; paint.textSize = 36f
+                canvas.drawText("(${px.toInt()}, ${py.toInt()})", px + 50f, py, paint)
+            }
+        }
     }
 }

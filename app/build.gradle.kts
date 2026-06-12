@@ -11,18 +11,35 @@ android {
         applicationId = "com.imagemacro"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
         vectorDrawables { useSupportLibrary = true }
+    }
+
+    // 정식(릴리스) 서명. 디버그 키로 서명하면 Play Protect가 "개발자 미확인" 경고를
+    // 띄우므로, 저장소에 포함된 고정 키스토어로 서명해 배포한다.
+    // 이 키는 인앱 자동 업데이트의 서명 일치를 위해 항상 동일하게 유지해야 한다.
+    signingConfigs {
+        create("release") {
+            storeFile = file("imagemacro-release.keystore")
+            storePassword = "imagemacro2024"
+            keyAlias = "imagemacro"
+            keyPassword = "imagemacro2024"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        // 디버그 빌드도 같은 릴리스 키로 서명해 두 산출물의 서명을 일치시킨다.
+        debug {
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

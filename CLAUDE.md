@@ -4,15 +4,21 @@
 실행 시 이 저장소(`Hwanje/image_macro`)의 GitHub **최신 릴리스**를 확인하고,
 태그 버전이 현재 `versionName`보다 높으면 APK 에셋을 내려받아 설치를 안내한다.
 
-## 빌드
+## 빌드 / 서명
 
-- 이 환경의 기본 JDK(25)로는 Gradle이 실패한다. 반드시 JDK 21로 빌드:
+- 이 환경의 기본 JDK(25)로는 Gradle이 실패한다. 반드시 JDK 21로 **릴리스** 빌드:
   ```bash
-  JAVA_HOME=/usr/local/sdkman/candidates/java/21.0.10-ms ./gradlew :app:assembleDebug
+  JAVA_HOME=/usr/local/sdkman/candidates/java/21.0.10-ms ./gradlew :app:assembleRelease
   ```
-- 산출물: `app/build/outputs/apk/debug/app-debug.apk`
-- 업데이트(덮어쓰기) 설치는 서명이 같아야 하므로 **항상 이 환경에서 같은
-  debug keystore로 빌드**할 것. 서명이 달라지면 사용자는 앱을 지우고 재설치해야 한다.
+- 산출물: `app/build/outputs/apk/release/app-release.apk`
+- **서명**: 저장소에 포함된 고정 릴리스 키스토어 `app/imagemacro-release.keystore`
+  (alias `imagemacro`, store/key 비밀번호 `imagemacro2024`)로 서명한다. 설정은
+  `app/build.gradle.kts`의 `signingConfigs`에 있다. 디버그 키로 서명하면 Play Protect가
+  "개발자 미확인" 악성앱 경고를 띄우므로 **반드시 이 릴리스 키로 배포**한다.
+- 업데이트(덮어쓰기) 설치는 서명이 같아야 하므로 **항상 이 키스토어로 빌드**할 것.
+  서명이 달라지면 사용자는 앱을 지우고 재설치해야 한다.
+  (v1.2 이하 디버그 서명 → v1.3 릴리스 서명으로 키가 바뀌었으므로, v1.2 이하 설치
+  사용자는 한 번은 기존 앱 삭제 후 재설치해야 v1.3을 받을 수 있다.)
 
 ## ⚠️ 커밋·푸시 시 필수 절차 (인앱 자동 업데이트 배포)
 
@@ -21,9 +27,9 @@
 
 1. **버전 올리기** — `app/build.gradle.kts`의 `versionCode` +1,
    `versionName`을 새 버전으로 (예: `1.2` → `1.3`)
-2. **APK 빌드** (위 JDK 21 명령) 후 저장소 루트의 `ImageMacro.apk`도 갱신:
+2. **APK 빌드** (위 JDK 21 릴리스 명령) 후 저장소 루트의 `ImageMacro.apk`도 갱신:
    ```bash
-   cp app/build/outputs/apk/debug/app-debug.apk ImageMacro.apk
+   cp app/build/outputs/apk/release/app-release.apk ImageMacro.apk
    ```
 3. **커밋 & 푸시** (버전 변경 + `ImageMacro.apk` 포함)
 4. **GitHub 릴리스 게시** — 태그는 `v` + versionName, APK 에셋 첨부 필수:
