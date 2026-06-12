@@ -25,8 +25,10 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import com.imagemacro.R
+import com.imagemacro.capture.AccessibilityScreenGrabber
 import com.imagemacro.capture.CaptureBus
 import com.imagemacro.capture.ScreenCaptureManager
+import com.imagemacro.capture.ScreenGrabber
 import com.imagemacro.engine.MacroEngine
 import com.imagemacro.model.Macro
 import com.imagemacro.model.MacroStore
@@ -50,7 +52,7 @@ class MacroService : Service() {
     private var btnToggle: TextView? = null
 
     private var projection: MediaProjection? = null
-    private var capture: ScreenCaptureManager? = null
+    private var capture: ScreenGrabber? = null
     private var engine: MacroEngine? = null
     private var macro: Macro? = null
     private var captureSession: CaptureSession? = null
@@ -147,15 +149,36 @@ class MacroService : Service() {
         val id = intent.getStringExtra(EXTRA_MACRO_ID)
         macro = id?.let { MacroStore.find(this, it) } ?: MacroStore.load(this).firstOrNull()
 
+        rebuildEngine()
+        showOverlay()
+        updateTitle()
+    }
+
+    /** 현재 capture 참조로 엔진을 새로 만든다 (capture 가 바뀔 때마다 호출). */
+    private fun rebuildEngine() {
+        engine?.stop()
         engine = MacroEngine(
             context = this,
             capture = capture,
             onStatus = { s -> statusText?.text = s },
             onFinished = { setToggleLabel(false); cancelAutoStop() }
         )
+    }
 
-        showOverlay()
-        updateTitle()
+    /**
+     * 이미지 감지용 화면 캡처 수단을 확보한다.
+     * Android 11(API 30)+ 는 접근성 스크린샷을 써서 **화면 공유 없이** 캡처한다.
+     * 확보하면 true. (API 30 미만은 false → 호출부에서 MediaProjection 으로 폴백)
+     */
+    private fun ensureGrabber(): Boolean {
+        if (capture != null) return true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && MacroAccessibilityService.isReady()) {
+            capture = AccessibilityScreenGrabber()
+            rebuildEngine()
+            statusText?.text = "준비됨 (접근성 캡처 · 화면 공유 없음)"
+            return true
+        }
+        return false
     }
 
     /** 편집기에서 요청한 캡처 전용 모드: 패널 없이 바로 셔터를 띄운다. */
@@ -179,13 +202,7 @@ class MacroService : Service() {
             return
         }
         // 엔진의 capture 참조를 갱신하기 위해 재생성
-        engine?.stop()
-        engine = MacroEngine(
-            context = this,
-            capture = capture,
-            onStatus = { s -> statusText?.text = s },
-            onFinished = { setToggleLabel(false); cancelAutoStop() }
-        )
+        rebuildEngine()
         after?.invoke()
     }
 
@@ -207,14 +224,20 @@ class MacroService : Service() {
      * record=true 면 저장된 템플릿으로 '이미지 찾아 탭' 단계까지 현재 매크로에 추가한다.
      */
     private fun beginCapture(returnMacroId: String?, record: Boolean = false) {
-        val cap = capture
+        var cap = capture
         if (cap == null) {
             if (!isRunning) { stopSelf(); return }
-            // 화면 공유 없이 떠 있던 상태 → 이미지 작업을 위해 이제 프로젝션을 요청
-            Toast.makeText(this, "이미지 캡처를 위해 화면 공유를 한 번 허용해 주세요", Toast.LENGTH_LONG).show()
-            requestProjection { beginCapture(returnMacroId, record) }
-            return
+            // 화면 공유 없이 떠 있던 상태 → 접근성 스크린샷(API30+)으로 캡처 확보
+            if (ensureGrabber()) {
+                cap = capture
+            } else {
+                // API 30 미만 폴백: 화면 공유를 한 번 요청
+                Toast.makeText(this, "이미지 캡처를 위해 화면 공유를 한 번 허용해 주세요", Toast.LENGTH_LONG).show()
+                requestProjection { beginCapture(returnMacroId, record) }
+                return
+            }
         }
+        if (cap == null) return
         if (captureSession != null) return
         captureRecordMode = record
 
@@ -398,8 +421,9 @@ class MacroService : Service() {
         if (m == null || m.steps.isEmpty()) { statusText?.text = "단계가 없습니다"; return }
         if (!MacroAccessibilityService.isReady()) { statusText?.text = "접근성 권한 필요"; return }
 
-        // 이미지 감지를 쓰는데 화면 캡처가 없으면 먼저 프로젝션을 받는다
-        if (m.usesImageDetection() && capture == null) {
+        // 이미지 감지를 쓰는데 화면 캡처가 없으면 확보한다.
+        // API30+ 는 접근성 스크린샷(화면 공유 없음), 미만은 MediaProjection 폴백.
+        if (m.usesImageDetection() && capture == null && !ensureGrabber()) {
             Toast.makeText(this, "이미지 감지를 위해 화면 공유를 한 번 허용해 주세요", Toast.LENGTH_LONG).show()
             requestProjection { overlay?.visibility = View.VISIBLE; runWithSchedule(m) }
             return

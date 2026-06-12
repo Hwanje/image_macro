@@ -5,7 +5,7 @@ import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
-import com.imagemacro.capture.ScreenCaptureManager
+import com.imagemacro.capture.ScreenGrabber
 import com.imagemacro.model.Macro
 import com.imagemacro.model.MacroStore
 import com.imagemacro.model.Step
@@ -19,7 +19,7 @@ import com.imagemacro.service.MacroAccessibilityService
  */
 class MacroEngine(
     private val context: Context,
-    private val capture: ScreenCaptureManager?,   // 화면 캡처 없이(좌표 전용) 실행 시 null
+    private val capture: ScreenGrabber?,   // 화면 캡처 없이(좌표 전용) 실행 시 null
     private val onStatus: (String) -> Unit,
     private val onFinished: () -> Unit
 ) {

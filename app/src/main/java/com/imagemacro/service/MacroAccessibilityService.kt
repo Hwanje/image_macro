@@ -2,9 +2,13 @@ package com.imagemacro.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.graphics.Bitmap
 import android.graphics.Path
+import android.os.Build
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
@@ -58,6 +62,42 @@ class MacroAccessibilityService : AccessibilityService() {
 
     fun goBack() = performGlobalAction(GLOBAL_ACTION_BACK)
     fun goHome() = performGlobalAction(GLOBAL_ACTION_HOME)
+
+    // 스크린샷 콜백을 받는 전용 스레드 (메인 스레드 블로킹 회피)
+    private val shotExecutor = Executors.newSingleThreadExecutor()
+
+    /**
+     * 화면 공유(MediaProjection) 없이 접근성 서비스로 현재 화면을 한 장 캡처한다.
+     * Android 11(API 30)+ 에서만 동작. 블로킹이므로 백그라운드 스레드에서 호출할 것.
+     */
+    fun captureScreen(): Bitmap? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val latch = CountDownLatch(1)
+        var result: Bitmap? = null
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, shotExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        try {
+                            val hw = screenshot.hardwareBuffer
+                            val hwBmp = Bitmap.wrapHardwareBuffer(hw, screenshot.colorSpace)
+                            // 픽셀 접근을 위해 소프트웨어 비트맵으로 복사
+                            result = hwBmp?.copy(Bitmap.Config.ARGB_8888, false)
+                            hwBmp?.recycle()
+                            hw.close()
+                        } catch (_: Exception) {
+                        } finally {
+                            latch.countDown()
+                        }
+                    }
+                    override fun onFailure(errorCode: Int) { latch.countDown() }
+                })
+        } catch (_: Exception) {
+            return null
+        }
+        latch.await(2, TimeUnit.SECONDS)
+        return result
+    }
 
     private fun dispatchBlocking(gesture: GestureDescription): Boolean {
         val latch = CountDownLatch(1)

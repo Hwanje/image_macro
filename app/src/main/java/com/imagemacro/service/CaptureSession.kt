@@ -19,7 +19,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.Toast
 import com.imagemacro.R
-import com.imagemacro.capture.ScreenCaptureManager
+import com.imagemacro.capture.ScreenGrabber
 import com.imagemacro.model.MacroStore
 import kotlin.math.abs
 import kotlin.math.max
@@ -34,7 +34,7 @@ import kotlin.math.min
 class CaptureSession(
     private val context: Context,
     private val windowManager: WindowManager,
-    private val capture: ScreenCaptureManager,
+    private val capture: ScreenGrabber,
     private val onFinished: (String?) -> Unit   // 저장된 템플릿 파일명, 취소면 null
 ) {
     private val handler = Handler(Looper.getMainLooper())
@@ -97,15 +97,21 @@ class CaptureSession(
 
     private fun grabFrame(attempt: Int) {
         if (finished) return
-        val bmp = capture.capture()
-        when {
-            bmp != null -> { removeShutter(); showCrop(bmp) }
-            attempt < 12 -> handler.postDelayed({ grabFrame(attempt + 1) }, 100)
-            else -> {
-                Toast.makeText(context, "캡처 실패 — 다시 시도하세요", Toast.LENGTH_SHORT).show()
-                shutter?.visibility = View.VISIBLE
+        // capture() 는 블로킹(접근성 스크린샷)일 수 있어 백그라운드에서 실행 후 메인으로 복귀
+        Thread {
+            val bmp = capture.capture()
+            handler.post {
+                if (finished) { bmp?.recycle(); return@post }
+                when {
+                    bmp != null -> { removeShutter(); showCrop(bmp) }
+                    attempt < 12 -> handler.postDelayed({ grabFrame(attempt + 1) }, 100)
+                    else -> {
+                        Toast.makeText(context, "캡처 실패 — 다시 시도하세요", Toast.LENGTH_SHORT).show()
+                        shutter?.visibility = View.VISIBLE
+                    }
+                }
             }
-        }
+        }.start()
     }
 
     // ---------------- 얼린 화면 + 영역 선택 ----------------

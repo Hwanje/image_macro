@@ -19,7 +19,7 @@ import android.view.WindowManager
 class ScreenCaptureManager(
     private val context: Context,
     private val projection: MediaProjection
-) {
+) : ScreenGrabber {
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var handlerThread: HandlerThread? = null
@@ -57,7 +57,7 @@ class ScreenCaptureManager(
     }
 
     /** 현재 화면 프레임을 가져온다(없으면 null). 호출부에서 recycle 책임. */
-    fun capture(): Bitmap? {
+    override fun capture(): Bitmap? {
         val reader = imageReader ?: return null
         val image = reader.acquireLatestImage() ?: return null
         return try {
@@ -79,7 +79,7 @@ class ScreenCaptureManager(
         }
     }
 
-    fun release() {
+    override fun release() {
         try { projection.unregisterCallback(projectionCallback) } catch (_: Exception) {}
         virtualDisplay?.release(); virtualDisplay = null
         imageReader?.close(); imageReader = null

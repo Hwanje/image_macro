@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity() {
         b.recycler.adapter = adapter
 
         b.fabAdd.setOnClickListener { openEditor(null) }
+        b.btnCheckUpdate.setOnClickListener { checkForUpdate(manual = true) }
         b.btnOverlay.setOnClickListener { requestOverlay() }
         b.btnOverlayBuild.setOnClickListener { startOverlayBuilder() }
         b.btnAccessibility.setOnClickListener {
@@ -55,11 +56,27 @@ class MainActivity : AppCompatActivity() {
         checkForUpdate()
     }
 
-    /** 앱 실행 시 GitHub 최신 릴리스를 확인하고 새 버전이 있으면 업데이트를 제안한다 */
-    private fun checkForUpdate() {
+    /**
+     * GitHub 최신 릴리스를 확인하고 새 버전이 있으면 업데이트를 제안한다.
+     * @param manual 사용자가 '업데이트 확인' 버튼을 눌렀을 때 true.
+     *   이때는 확인 중/최신 상태도 토스트로 알려준다(자동 확인은 조용히 처리).
+     */
+    private fun checkForUpdate(manual: Boolean = false) {
+        if (manual) Toast.makeText(this, "업데이트 확인 중…", Toast.LENGTH_SHORT).show()
         lifecycleScope.launch {
-            val info = UpdateManager.checkForUpdate(this@MainActivity) ?: return@launch
+            val info = try {
+                UpdateManager.checkForUpdate(this@MainActivity)
+            } catch (e: Exception) {
+                if (manual && !isFinishing && !isDestroyed) {
+                    Toast.makeText(this@MainActivity, "업데이트 확인 실패: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+                return@launch
+            }
             if (isFinishing || isDestroyed) return@launch
+            if (info == null) {
+                if (manual) Toast.makeText(this@MainActivity, "최신 버전입니다", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
             AlertDialog.Builder(this@MainActivity)
                 .setTitle("업데이트 알림")
                 .setMessage(
@@ -175,14 +192,15 @@ class MainActivity : AppCompatActivity() {
         if (macro.steps.isEmpty()) {
             Toast.makeText(this, "단계가 없는 매크로입니다", Toast.LENGTH_SHORT).show(); return
         }
-        if (macro.usesImageDetection()) {
-            // 이미지 감지 매크로는 화면 캡처가 필요 → 프로젝션 권한부터
+        if (macro.usesImageDetection() && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            // Android 10 이하: 접근성 스크린샷을 못 쓰므로 화면 공유로 폴백
             val i = Intent(this, ProjectionRequestActivity::class.java).apply {
                 putExtra(ProjectionRequestActivity.EXTRA_MACRO_ID, macro.id)
             }
             startActivity(i)
         } else {
-            // 좌표 전용 매크로는 화면 공유 없이 다른 앱 위에 띄우기만으로 실행
+            // 이미지 감지든 좌표든 화면 공유 없이 다른 앱 위에 띄우기로 실행
+            // (이미지 단계는 접근성 스크린샷으로 캡처 — 화면 공유 불필요)
             startMacroService(macro.id)
         }
         Toast.makeText(this, "오버레이 패널에서 ▶ 시작을 누르세요", Toast.LENGTH_LONG).show()
