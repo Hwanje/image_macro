@@ -5,6 +5,8 @@ import android.accessibilityservice.GestureDescription
 import android.graphics.Bitmap
 import android.graphics.Path
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import java.util.concurrent.CountDownLatch
@@ -23,6 +25,9 @@ class MacroAccessibilityService : AccessibilityService() {
             private set
 
         fun isReady() = instance != null
+
+        // HardwareBuffer→Bitmap 변환 실패를 나타내는 자체 코드(시스템 코드와 겹치지 않게 음수)
+        private const val CONVERT_FAILED = -2
     }
 
     override fun onServiceConnected() {
@@ -65,6 +70,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
     // 스크린샷 콜백을 받는 전용 스레드 (메인 스레드 블로킹 회피)
     private val shotExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /** 마지막 takeScreenshot 결과 코드 (0=성공/미시도). 실패 원인 안내에 사용. */
     @Volatile
@@ -79,9 +85,11 @@ class MacroAccessibilityService : AccessibilityService() {
     fun screenshotErrorText(): String? = when (lastScreenshotError) {
         0 -> null
         ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "캡처가 너무 잦아요 — 잠시 후 다시 시도하세요"
-        ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "접근성 권한이 필요합니다"
+        ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "접근성 권한이 필요합니다 (접근성 서비스 껐다 켜보세요)"
         ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "캡처할 화면을 찾을 수 없습니다"
-        ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "캡처 중 내부 오류가 발생했습니다"
+        ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR ->
+            "캡처 내부 오류(코드 1) — 기기가 이 방식의 캡처를 거부했습니다. 접근성 서비스를 껐다 켜고 다시 시도하세요"
+        CONVERT_FAILED -> "캡처 이미지 변환 실패 — 다시 시도하세요"
         else ->
             // ERROR_TAKE_SCREENSHOT_SECURE_WINDOW(=5, API 33+) 등
             if (Build.VERSION.SDK_INT >= 33 &&
@@ -99,35 +107,40 @@ class MacroAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
         val latch = CountDownLatch(1)
         var result: Bitmap? = null
-        try {
-            takeScreenshot(Display.DEFAULT_DISPLAY, shotExecutor,
-                object : TakeScreenshotCallback {
-                    override fun onSuccess(screenshot: ScreenshotResult) {
-                        try {
-                            val hw = screenshot.hardwareBuffer
-                            val hwBmp = Bitmap.wrapHardwareBuffer(hw, screenshot.colorSpace)
-                            // 픽셀 접근을 위해 소프트웨어 비트맵으로 복사
-                            result = hwBmp?.copy(Bitmap.Config.ARGB_8888, false)
-                            hwBmp?.recycle()
-                            hw.close()
-                            lastScreenshotError = 0
-                        } catch (_: Throwable) {
-                            // wrapHardwareBuffer/copy 실패 등 (Error 포함)
-                            lastScreenshotError = ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR
-                        } finally {
-                            latch.countDown()
-                        }
-                    }
-                    override fun onFailure(errorCode: Int) {
-                        lastScreenshotError = errorCode
-                        latch.countDown()
-                    }
-                })
-        } catch (_: Throwable) {
-            lastScreenshotError = ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR
-            return null
+        val callback = object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                try {
+                    val hw = screenshot.hardwareBuffer
+                    val hwBmp = Bitmap.wrapHardwareBuffer(hw, screenshot.colorSpace)
+                    // 픽셀 접근을 위해 소프트웨어 비트맵으로 복사
+                    val sw = hwBmp?.copy(Bitmap.Config.ARGB_8888, false)
+                    hwBmp?.recycle()
+                    hw.close()
+                    result = sw
+                    lastScreenshotError = if (sw != null) 0 else CONVERT_FAILED
+                } catch (_: Throwable) {
+                    // wrapHardwareBuffer/copy 실패 등 (Error 포함)
+                    lastScreenshotError = CONVERT_FAILED
+                } finally {
+                    latch.countDown()
+                }
+            }
+            override fun onFailure(errorCode: Int) {
+                lastScreenshotError = errorCode
+                latch.countDown()
+            }
         }
-        latch.await(2, TimeUnit.SECONDS)
+        // takeScreenshot 호출 자체를 메인 스레드에서 수행 (일부 기기의 스레드 제약 회피).
+        // 콜백은 shotExecutor 에서, 대기는 호출한 백그라운드 스레드에서 한다.
+        mainHandler.post {
+            try {
+                takeScreenshot(Display.DEFAULT_DISPLAY, shotExecutor, callback)
+            } catch (_: Throwable) {
+                lastScreenshotError = ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR
+                latch.countDown()
+            }
+        }
+        latch.await(3, TimeUnit.SECONDS)
         return result
     }
 

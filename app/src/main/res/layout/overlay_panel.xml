@@ -73,6 +73,17 @@
             android:textColor="#FFFFFF" />
 
         <TextView
+            android:id="@+id/btnPickMacro"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/btn_pill"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="8dp"
+            android:text="📋"
+            android:textColor="#FFFFFF" />
+
+        <TextView
             android:id="@+id/btnCapture"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -240,6 +251,43 @@
 
             <LinearLayout
                 android:id="@+id/stepList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </ScrollView>
+    </LinearLayout>
+
+    <!-- 매크로 선택 패널 (📋 시 펼침) -->
+    <LinearLayout
+        android:id="@+id/macroPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginBottom="6dp"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="매크로 선택"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
+
+        <ScrollView
+            android:id="@+id/macroScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:fillViewport="false">
+
+            <LinearLayout
+                android:id="@+id/macroList"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical" />

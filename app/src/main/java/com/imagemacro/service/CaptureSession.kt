@@ -22,8 +22,6 @@ import com.imagemacro.R
 import com.imagemacro.capture.ScreenGrabber
 import com.imagemacro.model.MacroStore
 import kotlin.math.abs
-import kotlin.math.max
-import kotlin.math.min
 
 /**
  * 다른 앱 위에서 진행되는 템플릿 캡처 세션.
@@ -92,24 +90,23 @@ class CaptureSession(
     /** 셔터를 숨기고, 셔터 없는 프레임이 도착할 시간을 준 뒤 화면을 얼린다. */
     private fun shoot() {
         shutter?.visibility = View.INVISIBLE
-        handler.postDelayed({ grabFrame(0) }, 400)
+        Toast.makeText(context, "캡처 중…", Toast.LENGTH_SHORT).show()
+        handler.postDelayed({ grabFrame() }, 450)
     }
 
-    private fun grabFrame(attempt: Int) {
+    private fun grabFrame() {
         if (finished) return
-        // capture() 는 블로킹(접근성 스크린샷)일 수 있어 백그라운드에서 실행 후 메인으로 복귀
+        // capture() 는 블로킹(접근성 스크린샷, 내부적으로 재시도)이라 백그라운드에서 실행 후 복귀
         Thread {
             val bmp = capture.capture()
             handler.post {
                 if (finished) { bmp?.recycle(); return@post }
-                when {
-                    bmp != null -> { removeShutter(); showCrop(bmp) }
-                    attempt < 6 -> handler.postDelayed({ grabFrame(attempt + 1) }, 300)
-                    else -> {
-                        val why = MacroAccessibilityService.instance?.screenshotErrorText()
-                        Toast.makeText(context, why ?: "캡처 실패 — 다시 시도하세요", Toast.LENGTH_LONG).show()
-                        shutter?.visibility = View.VISIBLE
-                    }
+                if (bmp != null) {
+                    removeShutter(); showCrop(bmp)
+                } else {
+                    val why = MacroAccessibilityService.instance?.screenshotErrorText()
+                    Toast.makeText(context, why ?: "캡처 실패 — 다시 시도하세요", Toast.LENGTH_LONG).show()
+                    shutter?.visibility = View.VISIBLE
                 }
             }
         }.start()
@@ -209,12 +206,21 @@ class CaptureSession(
         }
     }
 
-    /** 얼린 화면을 그대로 보여주고 드래그로 사각형 영역을 선택한다. */
+    /**
+     * 얼린 화면을 보여주고, 가운데에 놓인 사각형의 모서리·변 핸들을 끌어
+     * 크기를 조절하거나 안쪽을 끌어 위치를 옮겨 영역을 정한다(드래그로 새로 그리지 않음).
+     */
     private class SelectView(ctx: Context, private val bitmap: Bitmap) : View(ctx) {
         var onSelection: ((RectF) -> Unit)? = null
 
         private val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#FF5252"); style = Paint.Style.STROKE; strokeWidth = 4f
+        }
+        private val handleFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#FF5252"); style = Paint.Style.FILL
+        }
+        private val handleRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 3f
         }
         private val dim = Paint().apply { color = Color.argb(120, 0, 0, 0) }
         private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -222,62 +228,128 @@ class CaptureSession(
             setShadowLayer(4f, 0f, 0f, Color.BLACK)
         }
         private val dst = RectF()
-        private val sel = RectF()       // 드래그 원시값 (방향 정규화 전)
-        private var hasSel = false
+        private val rect = RectF()       // 현재 선택 사각형(뷰 좌표)
+        private var ready = false
+
+        private val handleR = 16f        // 핸들 그리기 반지름
+        private val touchR = 64f         // 핸들 터치 인식 반지름
+        private val minSize = 48f        // 최소 사각형 크기
+
+        // 드래그 상태
+        private enum class Mode { NONE, MOVE, L, T, R, B, LT, RT, LB, RB }
+        private var mode = Mode.NONE
+        private var lastX = 0f
+        private var lastY = 0f
+
+        override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+            super.onSizeChanged(w, h, ow, oh)
+            // 기본 사각형: 화면 가운데 50% 크기
+            val cw = w * 0.5f; val ch = h * 0.5f
+            rect.set((w - cw) / 2f, (h - ch) / 2f, (w + cw) / 2f, (h + ch) / 2f)
+            ready = true
+            post { onSelection?.invoke(RectF(rect)) }
+            invalidate()
+        }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    sel.set(event.x, event.y, event.x, event.y); hasSel = true; invalidate()
+                    mode = hitTest(event.x, event.y)
+                    lastX = event.x; lastY = event.y
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    sel.right = event.x; sel.bottom = event.y; invalidate()
-                    onSelection?.invoke(normalized())
+                    val dx = event.x - lastX; val dy = event.y - lastY
+                    lastX = event.x; lastY = event.y
+                    applyDrag(dx, dy)
+                    onSelection?.invoke(RectF(rect))
+                    invalidate()
                 }
-                MotionEvent.ACTION_UP -> invalidate()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> mode = Mode.NONE
             }
             return true
         }
 
-        private fun normalized() = RectF(
-            min(sel.left, sel.right), min(sel.top, sel.bottom),
-            max(sel.left, sel.right), max(sel.top, sel.bottom)
-        )
+        private fun near(px: Float, py: Float, x: Float, y: Float) =
+            abs(px - x) <= touchR && abs(py - y) <= touchR
+
+        private fun hitTest(x: Float, y: Float): Mode = when {
+            near(x, y, rect.left, rect.top) -> Mode.LT
+            near(x, y, rect.right, rect.top) -> Mode.RT
+            near(x, y, rect.left, rect.bottom) -> Mode.LB
+            near(x, y, rect.right, rect.bottom) -> Mode.RB
+            near(x, y, rect.centerX(), rect.top) -> Mode.T
+            near(x, y, rect.centerX(), rect.bottom) -> Mode.B
+            near(x, y, rect.left, rect.centerY()) -> Mode.L
+            near(x, y, rect.right, rect.centerY()) -> Mode.R
+            rect.contains(x, y) -> Mode.MOVE
+            else -> Mode.NONE
+        }
+
+        private fun applyDrag(dx: Float, dy: Float) {
+            when (mode) {
+                Mode.MOVE -> {
+                    var nx = dx; var ny = dy
+                    if (rect.left + nx < 0) nx = -rect.left
+                    if (rect.right + nx > width) nx = width - rect.right
+                    if (rect.top + ny < 0) ny = -rect.top
+                    if (rect.bottom + ny > height) ny = height - rect.bottom
+                    rect.offset(nx, ny)
+                }
+                Mode.L, Mode.LT, Mode.LB -> rect.left =
+                    (rect.left + dx).coerceIn(0f, rect.right - minSize)
+                Mode.R, Mode.RT, Mode.RB -> rect.right =
+                    (rect.right + dx).coerceIn(rect.left + minSize, width.toFloat())
+                else -> {}
+            }
+            when (mode) {
+                Mode.T, Mode.LT, Mode.RT -> rect.top =
+                    (rect.top + dy).coerceIn(0f, rect.bottom - minSize)
+                Mode.B, Mode.LB, Mode.RB -> rect.bottom =
+                    (rect.bottom + dy).coerceIn(rect.top + minSize, height.toFloat())
+                else -> {}
+            }
+        }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             dst.set(0f, 0f, width.toFloat(), height.toFloat())
             canvas.drawBitmap(bitmap, null, dst, null)
-            if (!hasSel) {
-                canvas.drawRect(dst, dim)
-                return
-            }
-            val r = normalized()
+            if (!ready) { canvas.drawRect(dst, dim); return }
             // 선택 영역 밖을 어둡게
-            canvas.drawRect(0f, 0f, dst.right, r.top, dim)
-            canvas.drawRect(0f, r.top, r.left, r.bottom, dim)
-            canvas.drawRect(r.right, r.top, dst.right, r.bottom, dim)
-            canvas.drawRect(0f, r.bottom, dst.right, dst.bottom, dim)
-            canvas.drawRect(r, border)
+            canvas.drawRect(0f, 0f, dst.right, rect.top, dim)
+            canvas.drawRect(0f, rect.top, rect.left, rect.bottom, dim)
+            canvas.drawRect(rect.right, rect.top, dst.right, rect.bottom, dim)
+            canvas.drawRect(0f, rect.bottom, dst.right, dst.bottom, dim)
+            canvas.drawRect(rect, border)
+            // 핸들 8개
+            for ((hx, hy) in handlePoints()) {
+                canvas.drawCircle(hx, hy, handleR, handleFill)
+                canvas.drawCircle(hx, hy, handleR, handleRing)
+            }
             val b = selectionInBitmap()
             if (b != null) {
-                val tx = r.left.coerceAtMost(width - 220f).coerceAtLeast(8f)
-                val ty = (r.top - 16f).coerceAtLeast(44f)
+                val tx = rect.left.coerceAtMost(width - 220f).coerceAtLeast(8f)
+                val ty = (rect.top - 16f).coerceAtLeast(44f)
                 canvas.drawText("${b.width()} × ${b.height()}", tx, ty, label)
             }
         }
 
+        private fun handlePoints() = listOf(
+            rect.left to rect.top, rect.centerX() to rect.top, rect.right to rect.top,
+            rect.left to rect.centerY(), rect.right to rect.centerY(),
+            rect.left to rect.bottom, rect.centerX() to rect.bottom, rect.right to rect.bottom
+        )
+
         /** 화면(뷰) 좌표 → 비트맵 픽셀 좌표 */
         fun selectionInBitmap(): Rect? {
-            if (!hasSel || width == 0 || height == 0) return null
-            val r = normalized()
+            if (!ready || width == 0 || height == 0) return null
             val sx = bitmap.width.toFloat() / width
             val sy = bitmap.height.toFloat() / height
             return Rect(
-                (r.left * sx).toInt().coerceIn(0, bitmap.width),
-                (r.top * sy).toInt().coerceIn(0, bitmap.height),
-                (r.right * sx).toInt().coerceIn(0, bitmap.width),
-                (r.bottom * sy).toInt().coerceIn(0, bitmap.height)
+                (rect.left * sx).toInt().coerceIn(0, bitmap.width),
+                (rect.top * sy).toInt().coerceIn(0, bitmap.height),
+                (rect.right * sx).toInt().coerceIn(0, bitmap.width),
+                (rect.bottom * sy).toInt().coerceIn(0, bitmap.height)
             )
         }
     }

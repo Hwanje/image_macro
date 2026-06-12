@@ -75,6 +75,8 @@ class MacroService : Service() {
     private var editPanel: View? = null            // 오버레이 안 단계 편집 패널
     private var stepListView: LinearLayout? = null  // 단계 행이 들어가는 컨테이너
     private var stepHeader: TextView? = null
+    private var macroPanel: View? = null            // 매크로 선택 패널
+    private var macroListView: LinearLayout? = null
 
     companion object {
         const val ACTION_START = "start"
@@ -364,9 +366,12 @@ class MacroService : Service() {
         editPanel = view.findViewById(R.id.editPanel)
         stepListView = view.findViewById(R.id.stepList)
         stepHeader = view.findViewById(R.id.txtStepHeader)
+        macroPanel = view.findViewById(R.id.macroPanel)
+        macroListView = view.findViewById(R.id.macroList)
 
         view.findViewById<View>(R.id.btnToggle).setOnClickListener { toggleRun() }
         view.findViewById<View>(R.id.btnEdit).setOnClickListener { toggleEditPanel() }
+        view.findViewById<View>(R.id.btnPickMacro).setOnClickListener { toggleMacroPanel() }
         view.findViewById<View>(R.id.btnClearSteps).setOnClickListener { clearSteps() }
         view.findViewById<View>(R.id.btnCapture).setOnClickListener { beginCapture(null) }
         view.findViewById<View>(R.id.btnClose).setOnClickListener { stopEverything() }
@@ -563,9 +568,75 @@ class MacroService : Service() {
         if (panel.visibility == View.VISIBLE) {
             panel.visibility = View.GONE
         } else {
+            macroPanel?.visibility = View.GONE
             rebuildStepList()
             panel.visibility = View.VISIBLE
         }
+    }
+
+    // ---------------- 오버레이 안 매크로 선택 ----------------
+
+    private fun toggleMacroPanel() {
+        val panel = macroPanel ?: return
+        if (panel.visibility == View.VISIBLE) {
+            panel.visibility = View.GONE
+        } else {
+            editPanel?.visibility = View.GONE
+            rebuildMacroList()
+            panel.visibility = View.VISIBLE
+        }
+    }
+
+    private fun rebuildMacroList() {
+        val list = macroListView ?: return
+        list.removeAllViews()
+        val all = MacroStore.load(this)
+        val curId = macro?.id
+        if (all.isEmpty()) {
+            list.addView(TextView(this).apply {
+                text = "저장된 매크로가 없습니다"
+                setTextColor(android.graphics.Color.parseColor("#9AA0A6"))
+                textSize = 12f
+                setPadding(0, dp(4), 0, dp(4))
+            })
+        }
+        for (m in all) {
+            val selected = m.id == curId
+            list.addView(TextView(this).apply {
+                text = (if (selected) "● " else "○ ") + m.name + "  (${m.steps.size}단계)"
+                setTextColor(android.graphics.Color.parseColor(if (selected) "#A5D6A7" else "#FFFFFF"))
+                textSize = 13f
+                setPadding(dp(4), dp(6), dp(4), dp(6))
+                setOnClickListener { selectMacro(m.id) }
+            })
+        }
+        // 새 매크로 만들기
+        list.addView(TextView(this).apply {
+            text = "＋ 새 매크로 만들기"
+            setTextColor(android.graphics.Color.parseColor("#FFE082"))
+            textSize = 13f
+            setPadding(dp(4), dp(8), dp(4), dp(6))
+            setOnClickListener { createNewMacro() }
+        })
+        capScrollHeight(R.id.macroScroll)
+    }
+
+    private fun selectMacro(id: String) {
+        val m = MacroStore.find(this, id) ?: return
+        macro = m
+        macroPanel?.visibility = View.GONE
+        updateTitle()
+        statusText?.text = "매크로 선택: ${m.name} (${m.steps.size}단계)"
+        if (editPanel?.visibility == View.VISIBLE) rebuildStepList()
+    }
+
+    private fun createNewMacro() {
+        val m = Macro(name = "오버레이 매크로 ${MacroStore.load(this).size + 1}")
+        MacroStore.upsert(this, m)
+        macro = m
+        macroPanel?.visibility = View.GONE
+        updateTitle()
+        statusText?.text = "새 매크로 생성됨 — ＋탭/＋이미지로 단계를 추가하세요"
     }
 
     /** 저장소의 최신본을 기준으로 현재 매크로를 가져온다(편집기/캡처와 동기화). */
@@ -588,11 +659,11 @@ class MacroService : Service() {
                 textSize = 12f
                 setPadding(0, dp(4), 0, dp(4))
             })
-            capEditScrollHeight()
+            capScrollHeight(R.id.editScroll)
             return
         }
         steps.forEachIndexed { i, step -> list.addView(makeStepRow(i, step, steps.size)) }
-        capEditScrollHeight()
+        capScrollHeight(R.id.editScroll)
     }
 
     private fun makeStepRow(index: Int, step: Step, total: Int): View {
@@ -697,9 +768,9 @@ class MacroService : Service() {
         setToggleLabel(false)
     }
 
-    /** 단계 목록이 화면을 넘지 않도록 스크롤 영역 높이를 화면의 45%로 제한한다. */
-    private fun capEditScrollHeight() {
-        val scroll = overlay?.findViewById<View>(R.id.editScroll) ?: return
+    /** 목록이 화면을 넘지 않도록 스크롤 영역 높이를 화면의 45%로 제한한다. */
+    private fun capScrollHeight(scrollId: Int) {
+        val scroll = overlay?.findViewById<View>(scrollId) ?: return
         scroll.layoutParams = scroll.layoutParams.apply { height = ViewGroup.LayoutParams.WRAP_CONTENT }
         scroll.post {
             val max = (resources.displayMetrics.heightPixels * 0.45f).toInt()

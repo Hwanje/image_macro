@@ -17,7 +17,7 @@ class AccessibilityScreenGrabber : ScreenGrabber {
         val svc = MacroAccessibilityService.instance ?: return null
 
         var attempt = 0
-        while (attempt < 3) {
+        while (attempt < MAX_ATTEMPTS) {
             attempt++
             // 직전 캡처와의 간격이 너무 짧으면 잠시 기다려 빈도 제한을 피한다
             val sinceLast = System.currentTimeMillis() - lastShotAt
@@ -28,9 +28,12 @@ class AccessibilityScreenGrabber : ScreenGrabber {
             val bmp = svc.captureScreen()
             lastShotAt = System.currentTimeMillis()
             if (bmp != null) return bmp
+            if (attempt >= MAX_ATTEMPTS) break
 
-            // 실패 → 사유에 따라 대기 후 재시도 (빈도 제한은 1초 이상 쉬어야 풀린다)
-            val wait = if (svc.lastErrorWasRateLimit()) RATE_LIMIT_WAIT_MS else MIN_INTERVAL_MS
+            // 실패 → 사유에 따라 대기 후 재시도.
+            //  - 빈도 제한: 1초 이상 쉬어야 풀린다
+            //  - 내부 오류 등 일시적 실패: 시도할수록 더 길게(backoff)
+            val wait = if (svc.lastErrorWasRateLimit()) RATE_LIMIT_WAIT_MS else 700L * attempt
             if (!sleep(wait)) return null
         }
         return null
@@ -48,5 +51,7 @@ class AccessibilityScreenGrabber : ScreenGrabber {
         private const val MIN_INTERVAL_MS = 1000L
         // 빈도 제한(INTERVAL_TIME_SHORT)으로 실패했을 때 추가 대기
         private const val RATE_LIMIT_WAIT_MS = 1100L
+        // 한 번 capture() 호출에서 재시도 횟수
+        private const val MAX_ATTEMPTS = 4
     }
 }
