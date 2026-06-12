@@ -104,9 +104,10 @@ class CaptureSession(
                 if (finished) { bmp?.recycle(); return@post }
                 when {
                     bmp != null -> { removeShutter(); showCrop(bmp) }
-                    attempt < 12 -> handler.postDelayed({ grabFrame(attempt + 1) }, 100)
+                    attempt < 6 -> handler.postDelayed({ grabFrame(attempt + 1) }, 300)
                     else -> {
-                        Toast.makeText(context, "캡처 실패 — 다시 시도하세요", Toast.LENGTH_SHORT).show()
+                        val why = MacroAccessibilityService.instance?.screenshotErrorText()
+                        Toast.makeText(context, why ?: "캡처 실패 — 다시 시도하세요", Toast.LENGTH_LONG).show()
                         shutter?.visibility = View.VISIBLE
                     }
                 }

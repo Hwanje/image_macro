@@ -59,12 +59,23 @@ class MacroEngine(
         while (running && (macro.repeatCount == 0 || round < macro.repeatCount)) {
             round++
             status(if (macro.repeatCount == 0) "실행중 (${round}회차 · ∞)" else "실행중 (${round}/${macro.repeatCount})")
-            runSteps(macro.steps, macro.stepDelayMs)
+            runTopLevel(macro.steps, macro.stepDelayMs)
             if (!running) break
         }
         status("완료")
     }
 
+    /** 최상위 단계는 인덱스 기반으로 실행해 JUMP(조건 이동)로 단계를 건너뛸 수 있게 한다. */
+    private fun runTopLevel(steps: List<Step>, delayBetween: Long) {
+        var i = 0
+        while (running && i in steps.indices) {
+            val target = execStep(steps[i])   // -1 = 다음 단계, 그 외 = 이동할 0-based 인덱스
+            i = if (target >= 0) target.coerceIn(0, steps.size - 1) else i + 1
+            sleep(delayBetween)
+        }
+    }
+
+    /** 중첩(LOOP/IF_IMAGE 안쪽) 단계 실행. JUMP 의 반환값은 무시한다(이동은 최상위에서만). */
     private fun runSteps(steps: List<Step>, delayBetween: Long) {
         for (step in steps) {
             if (!running) return
@@ -73,7 +84,8 @@ class MacroEngine(
         }
     }
 
-    private fun execStep(step: Step) {
+    /** @return JUMP 으로 이동할 0-based 인덱스. 이동 없으면 -1. */
+    private fun execStep(step: Step): Int {
         val acc = MacroAccessibilityService.instance
         when (step.type) {
             StepType.TAP -> {
@@ -120,6 +132,25 @@ class MacroEngine(
                     runSteps(step.children, 0)
                 }
             }
+            StepType.JUMP -> return evalJump(step)
+        }
+        return -1
+    }
+
+    /** 조건 이동 평가. 이동하면 0-based 대상 인덱스, 아니면 -1. */
+    private fun evalJump(step: Step): Int {
+        val targetIdx = step.gotoStep - 1   // 1-based → 0-based (범위는 호출부에서 보정)
+        if (step.templateName == null) {
+            status("→ ${step.gotoStep}번으로 이동")
+            return targetIdx
+        }
+        val found = findImage(step) != null
+        return if (found == step.jumpIfFound) {
+            status("${if (step.jumpIfFound) "이미지 보임" else "이미지 없음"} → ${step.gotoStep}번으로 이동")
+            targetIdx
+        } else {
+            status("조건 불충족 → 다음 단계")
+            -1
         }
     }
 
@@ -127,7 +158,11 @@ class MacroEngine(
         val cap = capture ?: run { status("이미지 단계 건너뜀 (화면 캡처 없음)"); return null }
         val name = step.templateName ?: return null
         val tpl = templateCache.getOrPut(name) { MacroStore.loadTemplate(context, name) } ?: return null
-        val screen = cap.capture() ?: return null
+        val screen = cap.capture() ?: run {
+            val why = MacroAccessibilityService.instance?.screenshotErrorText()
+            status(why ?: "화면 캡처 실패")
+            return null
+        }
         val region = if (step.hasRegion())
             intArrayOf(step.regionL, step.regionT, step.regionR, step.regionB) else null
         val result = TemplateMatcher.match(screen, tpl, step.threshold, region)

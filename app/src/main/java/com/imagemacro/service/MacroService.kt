@@ -16,12 +16,15 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import com.imagemacro.R
@@ -57,7 +60,8 @@ class MacroService : Service() {
     private var macro: Macro? = null
     private var captureSession: CaptureSession? = null
     private var captureOnly = false
-    private var captureRecordMode = false   // 캡처 후 '이미지 찾아 탭' 단계까지 추가
+    private var captureRec = Rec.NONE       // 캡처 후 추가할 단계 종류
+    private enum class Rec { NONE, FIND_TAP, JUMP }
     private var pointOverlay: View? = null   // 탭 좌표 녹화용 전체화면 오버레이
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -68,6 +72,9 @@ class MacroService : Service() {
     private var repeatText: TextView? = null
     private var timerText: TextView? = null
     private var delayText: TextView? = null
+    private var editPanel: View? = null            // 오버레이 안 단계 편집 패널
+    private var stepListView: LinearLayout? = null  // 단계 행이 들어가는 컨테이너
+    private var stepHeader: TextView? = null
 
     companion object {
         const val ACTION_START = "start"
@@ -172,7 +179,7 @@ class MacroService : Service() {
      */
     private fun ensureGrabber(): Boolean {
         if (capture != null) return true
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && MacroAccessibilityService.isReady()) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && MacroAccessibilityService.isReady()) {
             capture = AccessibilityScreenGrabber()
             rebuildEngine()
             statusText?.text = "준비됨 (접근성 캡처 · 화면 공유 없음)"
@@ -221,25 +228,25 @@ class MacroService : Service() {
 
     /**
      * 패널을 숨기고 셔터→영역선택→템플릿 저장 세션을 시작한다.
-     * record=true 면 저장된 템플릿으로 '이미지 찾아 탭' 단계까지 현재 매크로에 추가한다.
+     * rec=FIND_TAP/JUMP 면 저장된 템플릿으로 해당 단계까지 현재 매크로에 추가한다.
      */
-    private fun beginCapture(returnMacroId: String?, record: Boolean = false) {
+    private fun beginCapture(returnMacroId: String?, rec: Rec = Rec.NONE) {
         var cap = capture
         if (cap == null) {
             if (!isRunning) { stopSelf(); return }
-            // 화면 공유 없이 떠 있던 상태 → 접근성 스크린샷(API30+)으로 캡처 확보
+            // 화면 공유 없이 떠 있던 상태 → 접근성 스크린샷(API31+)으로 캡처 확보
             if (ensureGrabber()) {
                 cap = capture
             } else {
-                // API 30 미만 폴백: 화면 공유를 한 번 요청
+                // 구버전 폴백: 화면 공유를 한 번 요청
                 Toast.makeText(this, "이미지 캡처를 위해 화면 공유를 한 번 허용해 주세요", Toast.LENGTH_LONG).show()
-                requestProjection { beginCapture(returnMacroId, record) }
+                requestProjection { beginCapture(returnMacroId, rec) }
                 return
             }
         }
         if (cap == null) return
         if (captureSession != null) return
-        captureRecordMode = record
+        captureRec = rec
 
         engine?.takeIf { it.isRunning }?.let {
             it.stop(); setToggleLabel(false); statusText?.text = "정지됨"
@@ -248,10 +255,15 @@ class MacroService : Service() {
 
         captureSession = CaptureSession(this, windowManager, cap) { name ->
             captureSession = null
-            val wasRecord = captureRecordMode
-            captureRecordMode = false
-            if (name != null && wasRecord) {
+            val wasRec = captureRec
+            captureRec = Rec.NONE
+            if (name != null && wasRec == Rec.FIND_TAP) {
                 appendStep(Step(type = StepType.FIND_TAP, templateName = name))
+            } else if (name != null && wasRec == Rec.JUMP) {
+                appendStep(Step(type = StepType.JUMP, templateName = name, jumpIfFound = true, gotoStep = 1))
+                Toast.makeText(this,
+                    "조건 이동 추가됨 — ✎ 수정에서 '이동할 번호/조건'을 정하세요",
+                    Toast.LENGTH_LONG).show()
             } else if (name != null) {
                 val msg = if (returnMacroId == null)
                     "템플릿 저장됨 — 단계 편집의 '저장된 템플릿'에서 사용하세요"
@@ -323,6 +335,7 @@ class MacroService : Service() {
         titleText?.text = base.name
         statusText?.text = "단계 추가됨: ${step.summary()}  (총 ${base.steps.size}개)"
         setToggleLabel(false)
+        if (editPanel?.visibility == View.VISIBLE) rebuildStepList()
     }
 
     private fun bringEditorToFront(macroId: String) {
@@ -348,14 +361,19 @@ class MacroService : Service() {
         repeatText = view.findViewById(R.id.btnRepeat)
         timerText = view.findViewById(R.id.btnTimer)
         delayText = view.findViewById(R.id.btnStartDelay)
+        editPanel = view.findViewById(R.id.editPanel)
+        stepListView = view.findViewById(R.id.stepList)
+        stepHeader = view.findViewById(R.id.txtStepHeader)
 
         view.findViewById<View>(R.id.btnToggle).setOnClickListener { toggleRun() }
-        view.findViewById<View>(R.id.btnEdit).setOnClickListener { openEditor() }
+        view.findViewById<View>(R.id.btnEdit).setOnClickListener { toggleEditPanel() }
+        view.findViewById<View>(R.id.btnClearSteps).setOnClickListener { clearSteps() }
         view.findViewById<View>(R.id.btnCapture).setOnClickListener { beginCapture(null) }
         view.findViewById<View>(R.id.btnClose).setOnClickListener { stopEverything() }
         // 앱 위에서 바로 단계를 추가하는 빌드 컨트롤
         view.findViewById<View>(R.id.btnAddTap).setOnClickListener { beginPointPick() }
-        view.findViewById<View>(R.id.btnAddFind).setOnClickListener { beginCapture(null, record = true) }
+        view.findViewById<View>(R.id.btnAddFind).setOnClickListener { beginCapture(null, Rec.FIND_TAP) }
+        view.findViewById<View>(R.id.btnAddJump).setOnClickListener { beginCapture(null, Rec.JUMP) }
         // 실행 옵션(간격/반복/예약)
         view.findViewById<View>(R.id.btnInterval).setOnClickListener { cycleInterval() }
         view.findViewById<View>(R.id.btnRepeat).setOnClickListener { toggleRepeat() }
@@ -537,14 +555,161 @@ class MacroService : Service() {
         refreshOptionLabels()
     }
 
-    private fun openEditor() {
-        val m = macro ?: return
-        val i = Intent(this, MacroEditorActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            putExtra(MacroEditorActivity.EXTRA_MACRO_ID, m.id)
+    // ---------------- 오버레이 안 단계 편집 ----------------
+    // 게임 등 다른 앱으로 나가면 그 앱이 튕길 수 있어, 편집을 오버레이 안에서 처리한다.
+
+    private fun toggleEditPanel() {
+        val panel = editPanel ?: return
+        if (panel.visibility == View.VISIBLE) {
+            panel.visibility = View.GONE
+        } else {
+            rebuildStepList()
+            panel.visibility = View.VISIBLE
         }
-        startActivity(i)
     }
+
+    /** 저장소의 최신본을 기준으로 현재 매크로를 가져온다(편집기/캡처와 동기화). */
+    private fun currentMacro(): Macro? {
+        val m = macro?.let { MacroStore.find(this, it.id) } ?: macro
+        macro = m
+        return m
+    }
+
+    private fun rebuildStepList() {
+        val list = stepListView ?: return
+        val m = currentMacro()
+        val steps = m?.steps ?: mutableListOf()
+        list.removeAllViews()
+        stepHeader?.text = "단계 ${steps.size}개"
+        if (steps.isEmpty()) {
+            list.addView(TextView(this).apply {
+                text = "아직 단계가 없습니다.\n＋탭 위치 / ＋이미지 찾아 탭 으로 추가하세요"
+                setTextColor(android.graphics.Color.parseColor("#9AA0A6"))
+                textSize = 12f
+                setPadding(0, dp(4), 0, dp(4))
+            })
+            capEditScrollHeight()
+            return
+        }
+        steps.forEachIndexed { i, step -> list.addView(makeStepRow(i, step, steps.size)) }
+        capEditScrollHeight()
+    }
+
+    private fun makeStepRow(index: Int, step: Step, total: Int): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(3), 0, dp(3))
+        }
+        row.addView(TextView(this).apply {
+            text = "${index + 1}."
+            setTextColor(android.graphics.Color.parseColor("#9AA0A6"))
+            textSize = 12f
+            setPadding(0, 0, dp(6), 0)
+        })
+        row.addView(TextView(this).apply {
+            text = step.summary()
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 13f
+            maxWidth = dp(120)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        // 조건 이동(JUMP) 단계: 조건/이동대상을 키보드 없이 탭으로 조정
+        if (step.type == StepType.JUMP) {
+            if (step.templateName != null) {
+                row.addView(chip(if (step.jumpIfFound) "보이면" else "안보이면", "#FFE082") {
+                    step.jumpIfFound = !step.jumpIfFound; saveSteps()
+                })
+            }
+            row.addView(chip("→${step.gotoStep}", "#A5D6A7") {
+                val n = currentMacro()?.steps?.size ?: 1
+                step.gotoStep = if (step.gotoStep >= n) 1 else step.gotoStep + 1
+                saveSteps()
+            })
+        }
+        row.addView(iconBtn("▲", "#90CAF9") { moveStep(index, -1) }.apply {
+            isEnabled = index > 0; alpha = if (index > 0) 1f else 0.3f
+        })
+        row.addView(iconBtn("▼", "#90CAF9") { moveStep(index, +1) }.apply {
+            isEnabled = index < total - 1; alpha = if (index < total - 1) 1f else 0.3f
+        })
+        row.addView(iconBtn("✕", "#FF8A80") { deleteStep(index) })
+        return row
+    }
+
+    private fun iconBtn(label: String, color: String, onClick: () -> Unit) = TextView(this).apply {
+        text = label
+        setTextColor(android.graphics.Color.parseColor(color))
+        textSize = 16f
+        setPadding(dp(9), dp(3), dp(9), dp(3))
+        setOnClickListener { onClick() }
+    }
+
+    /** 단계 행 안의 작은 토글/값 버튼 (조건 이동의 조건·대상 조정용). */
+    private fun chip(label: String, color: String, onClick: () -> Unit) = TextView(this).apply {
+        text = label
+        setTextColor(android.graphics.Color.parseColor(color))
+        textSize = 12f
+        setBackgroundResource(R.drawable.btn_pill)
+        setPadding(dp(8), dp(3), dp(8), dp(3))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { marginStart = dp(4) }
+        setOnClickListener { onClick() }
+    }
+
+    /** 현재 매크로를 저장하고 단계 목록을 다시 그린다. */
+    private fun saveSteps() {
+        macro?.let { MacroStore.upsert(this, it) }
+        rebuildStepList()
+    }
+
+    private fun deleteStep(index: Int) {
+        val m = currentMacro() ?: return
+        if (index !in m.steps.indices) return
+        m.steps.removeAt(index)
+        MacroStore.upsert(this, m)
+        titleText?.text = m.name
+        rebuildStepList()
+        statusText?.text = "단계 삭제됨 (총 ${m.steps.size}개)"
+        setToggleLabel(false)
+    }
+
+    private fun moveStep(index: Int, dir: Int) {
+        val m = currentMacro() ?: return
+        val to = index + dir
+        if (index !in m.steps.indices || to !in m.steps.indices) return
+        val s = m.steps.removeAt(index)
+        m.steps.add(to, s)
+        MacroStore.upsert(this, m)
+        rebuildStepList()
+    }
+
+    private fun clearSteps() {
+        val m = currentMacro() ?: return
+        if (m.steps.isEmpty()) return
+        m.steps.clear()
+        MacroStore.upsert(this, m)
+        rebuildStepList()
+        statusText?.text = "모든 단계 삭제됨"
+        setToggleLabel(false)
+    }
+
+    /** 단계 목록이 화면을 넘지 않도록 스크롤 영역 높이를 화면의 45%로 제한한다. */
+    private fun capEditScrollHeight() {
+        val scroll = overlay?.findViewById<View>(R.id.editScroll) ?: return
+        scroll.layoutParams = scroll.layoutParams.apply { height = ViewGroup.LayoutParams.WRAP_CONTENT }
+        scroll.post {
+            val max = (resources.displayMetrics.heightPixels * 0.45f).toInt()
+            if (scroll.height > max) {
+                scroll.layoutParams = scroll.layoutParams.apply { height = max }
+            }
+        }
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     // ---------------- 생명주기 ----------------
 

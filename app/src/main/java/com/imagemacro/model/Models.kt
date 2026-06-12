@@ -12,6 +12,7 @@ enum class StepType(val display: String) {
     WAIT("대기"),
     FIND_TAP("이미지 찾아 탭"),
     IF_IMAGE("이미지가 보이면 (조건)"),
+    JUMP("조건 이동 (~면 N번으로)"),
     LOOP("반복"),
     TOAST("메시지 표시"),
     BACK("뒤로가기"),
@@ -43,6 +44,9 @@ data class Step(
     var offsetY: Int = 0,
     // 반복
     var loopCount: Int = 1,           // 0 = 무한
+    // 조건 이동(JUMP): 조건 충족 시 gotoStep(1부터) 번째 단계로 이동
+    var gotoStep: Int = 1,            // 이동할 단계 번호(1-based)
+    var jumpIfFound: Boolean = true,  // true=이미지 보이면 이동, false=안 보이면 이동
     // 메시지
     var message: String = "",
     // 중첩
@@ -58,6 +62,9 @@ data class Step(
         StepType.WAIT -> "대기  ${waitMs}ms"
         StepType.FIND_TAP -> "이미지 찾아 탭  [${templateName ?: "미지정"}]  ≥${(threshold * 100).toInt()}%"
         StepType.IF_IMAGE -> "만약 이미지 보이면  [${templateName ?: "미지정"}]  (then ${children.size} / else ${elseChildren.size})"
+        StepType.JUMP ->
+            if (templateName == null) "→ ${gotoStep}번으로 이동"
+            else "이미지 ${if (jumpIfFound) "보이면" else "안보이면"} → ${gotoStep}번 이동  [${templateName}]"
         StepType.LOOP -> "반복 ${if (loopCount == 0) "∞" else loopCount}회  (${children.size}단계)"
         StepType.TOAST -> "메시지  \"$message\""
         StepType.BACK -> "뒤로가기"
@@ -79,6 +86,7 @@ data class Macro(
 
     private fun stepsUseImage(list: List<Step>): Boolean = list.any {
         it.type == StepType.FIND_TAP || it.type == StepType.IF_IMAGE ||
+            (it.type == StepType.JUMP && it.templateName != null) ||
             stepsUseImage(it.children) || stepsUseImage(it.elseChildren)
     }
 }

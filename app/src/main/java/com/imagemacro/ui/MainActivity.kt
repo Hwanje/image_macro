@@ -192,8 +192,9 @@ class MainActivity : AppCompatActivity() {
         if (macro.steps.isEmpty()) {
             Toast.makeText(this, "단계가 없는 매크로입니다", Toast.LENGTH_SHORT).show(); return
         }
-        if (macro.usesImageDetection() && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            // Android 10 이하: 접근성 스크린샷을 못 쓰므로 화면 공유로 폴백
+        if (macro.usesImageDetection() && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            // Android 11 이하: 접근성 스크린샷(Bitmap.wrapHardwareBuffer, API31+)을
+            // 못 쓰므로 화면 공유로 폴백
             val i = Intent(this, ProjectionRequestActivity::class.java).apply {
                 putExtra(ProjectionRequestActivity.EXTRA_MACRO_ID, macro.id)
             }

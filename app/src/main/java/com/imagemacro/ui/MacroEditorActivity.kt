@@ -170,8 +170,34 @@ class MacroEditorActivity : AppCompatActivity() {
             StepType.LOOP -> dialogLoop(step)
             StepType.FIND_TAP -> dialogImage(step, withOffset = true)
             StepType.IF_IMAGE -> dialogImage(step, withOffset = false)
+            StepType.JUMP -> dialogJump(step)
             StepType.BACK, StepType.HOME -> {}
         }
+    }
+
+    private fun dialogJump(step: Step) {
+        val root = column()
+        root.addView(hint("조건이 맞으면 지정한 번호의 단계로 이동합니다.\n(번호는 최상위 단계 기준 1부터)"))
+        val eGoto = numField("이동할 단계 번호 (1부터)", step.gotoStep)
+        root.addView(eGoto)
+        root.addView(hint("조건 이미지: ${step.templateName ?: "없음 (무조건 이동)"}"))
+        root.addView(pickButton("🖼 조건 이미지 선택/캡처") {
+            step.gotoStep = eGoto.intVal().coerceAtLeast(1)
+            pickTemplate { name -> step.templateName = name; dialogJump(step) }
+        })
+        root.addView(pickButton(
+            if (step.jumpIfFound) "조건: 이미지가 보이면 이동 ✓" else "조건: 이미지가 안 보이면 이동 ✓"
+        ) {
+            step.gotoStep = eGoto.intVal().coerceAtLeast(1)
+            step.jumpIfFound = !step.jumpIfFound
+            dialogJump(step)
+        })
+        root.addView(pickButton("무조건 이동으로 (이미지 제거)") {
+            step.templateName = null
+            step.gotoStep = eGoto.intVal().coerceAtLeast(1)
+            dialogJump(step)
+        })
+        show("조건 이동", root) { step.gotoStep = eGoto.intVal().coerceAtLeast(1) }
     }
 
     private fun dialogTap(step: Step) {
