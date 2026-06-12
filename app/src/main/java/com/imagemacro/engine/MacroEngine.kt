@@ -19,7 +19,7 @@ import com.imagemacro.service.MacroAccessibilityService
  */
 class MacroEngine(
     private val context: Context,
-    private val capture: ScreenCaptureManager,
+    private val capture: ScreenCaptureManager?,   // 화면 캡처 없이(좌표 전용) 실행 시 null
     private val onStatus: (String) -> Unit,
     private val onFinished: () -> Unit
 ) {
@@ -124,9 +124,10 @@ class MacroEngine(
     }
 
     private fun findImage(step: Step): MatchResult? {
+        val cap = capture ?: run { status("이미지 단계 건너뜀 (화면 캡처 없음)"); return null }
         val name = step.templateName ?: return null
         val tpl = templateCache.getOrPut(name) { MacroStore.loadTemplate(context, name) } ?: return null
-        val screen = capture.capture() ?: return null
+        val screen = cap.capture() ?: return null
         val region = if (step.hasRegion())
             intArrayOf(step.regionL, step.regionT, step.regionR, step.regionB) else null
         val result = TemplateMatcher.match(screen, tpl, step.threshold, region)

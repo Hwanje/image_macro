@@ -175,11 +175,26 @@ class MainActivity : AppCompatActivity() {
         if (macro.steps.isEmpty()) {
             Toast.makeText(this, "단계가 없는 매크로입니다", Toast.LENGTH_SHORT).show(); return
         }
-        val i = Intent(this, ProjectionRequestActivity::class.java).apply {
-            putExtra(ProjectionRequestActivity.EXTRA_MACRO_ID, macro.id)
+        if (macro.usesImageDetection()) {
+            // 이미지 감지 매크로는 화면 캡처가 필요 → 프로젝션 권한부터
+            val i = Intent(this, ProjectionRequestActivity::class.java).apply {
+                putExtra(ProjectionRequestActivity.EXTRA_MACRO_ID, macro.id)
+            }
+            startActivity(i)
+        } else {
+            // 좌표 전용 매크로는 화면 공유 없이 다른 앱 위에 띄우기만으로 실행
+            startMacroService(macro.id)
         }
-        startActivity(i)
         Toast.makeText(this, "오버레이 패널에서 ▶ 시작을 누르세요", Toast.LENGTH_LONG).show()
+    }
+
+    private fun startMacroService(macroId: String) {
+        val svc = Intent(this, com.imagemacro.service.MacroService::class.java).apply {
+            action = com.imagemacro.service.MacroService.ACTION_START
+            putExtra(com.imagemacro.service.MacroService.EXTRA_MACRO_ID, macroId)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc)
+        else startService(svc)
     }
 
     /**
@@ -193,10 +208,8 @@ class MainActivity : AppCompatActivity() {
         }
         val macro = Macro(name = "오버레이 매크로")
         MacroStore.upsert(this, macro)
-        val i = Intent(this, ProjectionRequestActivity::class.java).apply {
-            putExtra(ProjectionRequestActivity.EXTRA_MACRO_ID, macro.id)
-        }
-        startActivity(i)
+        // 화면 공유 없이 오버레이만으로 시작 (이미지 캡처를 누르면 그때 화면 공유 요청)
+        startMacroService(macro.id)
         Toast.makeText(
             this,
             "대상 앱으로 이동한 뒤, 떠 있는 패널의 ＋탭 위치 / ＋이미지 찾아 탭 으로 단계를 추가하세요",

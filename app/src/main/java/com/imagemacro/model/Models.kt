@@ -70,5 +70,15 @@ data class Macro(
     var name: String = "새 매크로",
     var steps: MutableList<Step> = mutableListOf(),
     var repeatCount: Int = 1,     // 전체 반복 횟수, 0 = 무한
-    var stepDelayMs: Long = 300   // 각 단계 사이 기본 지연
-)
+    var stepDelayMs: Long = 300,  // 각 단계 사이 기본 지연(=스캔/클릭 간격)
+    var startDelaySec: Int = 0,   // 시작 지연(예약): ▶ 누른 뒤 N초 후 실행, 0 = 즉시
+    var autoStopSec: Int = 0      // 자동 중지(예약): 시작 후 N초 뒤 정지, 0 = 끄기
+) {
+    /** 이미지 감지(FIND_TAP·IF_IMAGE)를 쓰는 매크로인지. 화면 캡처 필요 여부 판단에 사용. */
+    fun usesImageDetection(): Boolean = stepsUseImage(steps)
+
+    private fun stepsUseImage(list: List<Step>): Boolean = list.any {
+        it.type == StepType.FIND_TAP || it.type == StepType.IF_IMAGE ||
+            stepsUseImage(it.children) || stepsUseImage(it.elseChildren)
+    }
+}

@@ -13,7 +13,9 @@ import android.graphics.PixelFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -56,11 +58,25 @@ class MacroService : Service() {
     private var captureRecordMode = false   // 캡처 후 '이미지 찾아 탭' 단계까지 추가
     private var pointOverlay: View? = null   // 탭 좌표 녹화용 전체화면 오버레이
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingAfterProjection: (() -> Unit)? = null  // 프로젝션 확보 후 실행할 작업
+    private var startCountdown: Runnable? = null              // 시작 지연(예약) 카운트다운
+    private var autoStopRunnable: Runnable? = null            // 자동 중지(예약)
+    private var intervalText: TextView? = null
+    private var repeatText: TextView? = null
+    private var timerText: TextView? = null
+    private var delayText: TextView? = null
+
     companion object {
         const val ACTION_START = "start"
         const val ACTION_STOP = "stop"
         const val ACTION_START_CAPTURE = "start_capture"  // 프로젝션 토큰과 함께, 캡처 전용 모드
         const val ACTION_CAPTURE = "capture"              // 실행중인 서비스에 캡처 세션 요청
+        const val ACTION_PROVIDE_PROJECTION = "provide_projection" // 실행중 서비스에 프로젝션 공급
+        // 간격(초) 후보값 — 패널에서 순환
+        private val INTERVALS = longArrayOf(100, 200, 300, 500, 1000, 2000, 3000, 5000)
+        private val AUTO_STOPS = intArrayOf(0, 60, 300, 600, 1800, 3600)      // 0=끄기
+        private val START_DELAYS = intArrayOf(0, 3, 5, 10, 30)                // 0=즉시
         const val EXTRA_RESULT_CODE = "code"
         const val EXTRA_DATA = "data"
         const val EXTRA_MACRO_ID = "macro_id"
@@ -82,20 +98,16 @@ class MacroService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopEverything(); return START_NOT_STICKY }
-            ACTION_START -> startWithProjection(intent, captureOnly = false)
-            ACTION_START_CAPTURE -> startWithProjection(intent, captureOnly = true)
+            ACTION_START -> startPanel(intent)
+            ACTION_START_CAPTURE -> startCaptureOnly(intent)
             ACTION_CAPTURE -> beginCapture(intent.getStringExtra(EXTRA_RETURN_MACRO_ID))
+            ACTION_PROVIDE_PROJECTION -> provideProjection(intent)
         }
         return START_NOT_STICKY
     }
 
-    private fun startWithProjection(intent: Intent, captureOnly: Boolean) {
-        this.captureOnly = captureOnly
-        startAsForeground()
-
-        // 재시작이면 이전 세션/프로젝션을 먼저 정리
-        captureSession?.dismiss(); captureSession = null
-        engine?.stop(); engine = null
+    /** 프로젝션 토큰을 받아 화면 캡처를 준비한다. 성공하면 true. */
+    private fun setupProjection(intent: Intent): Boolean {
         capture?.release(); capture = null
         try { projection?.stop() } catch (_: Exception) {}
         projection = null
@@ -103,33 +115,89 @@ class MacroService : Service() {
         val code = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
         @Suppress("DEPRECATION")
         val data: Intent? = intent.getParcelableExtra(EXTRA_DATA)
-        if (data == null) { stopEverything(); return }
+        if (data == null) return false
 
         val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        projection = mpm.getMediaProjection(code, data)
-        if (projection == null) { stopEverything(); return }
-
+        projection = mpm.getMediaProjection(code, data) ?: return false
         capture = ScreenCaptureManager(this, projection!!).also { it.start() }
-        isRunning = true
+        // 프로젝션을 가졌으니 FGS 유형을 mediaProjection 으로 갱신
+        startAsForeground(withProjection = true)
+        return true
+    }
 
-        if (captureOnly) {
-            // 편집기에서 요청한 캡처 전용 모드: 패널 없이 바로 셔터를 띄운다
-            beginCapture(intent.getStringExtra(EXTRA_RETURN_MACRO_ID))
-            return
+    /** 오버레이 패널 시작. 프로젝션(EXTRA_DATA)이 있으면 캡처도 준비, 없으면 좌표 전용. */
+    private fun startPanel(intent: Intent) {
+        this.captureOnly = false
+
+        // 재시작이면 이전 상태 정리
+        captureSession?.dismiss(); captureSession = null
+        engine?.stop(); engine = null
+
+        @Suppress("DEPRECATION")
+        val hasData = intent.getParcelableExtra<Intent>(EXTRA_DATA) != null
+        if (hasData) {
+            startAsForeground(withProjection = true)
+            setupProjection(intent)
+        } else {
+            // 화면 공유 없이 다른 앱 위에 띄우기 (좌표 전용)
+            startAsForeground(withProjection = false)
         }
+        isRunning = true
 
         val id = intent.getStringExtra(EXTRA_MACRO_ID)
         macro = id?.let { MacroStore.find(this, it) } ?: MacroStore.load(this).firstOrNull()
 
         engine = MacroEngine(
             context = this,
-            capture = capture!!,
+            capture = capture,
             onStatus = { s -> statusText?.text = s },
-            onFinished = { setToggleLabel(false) }
+            onFinished = { setToggleLabel(false); cancelAutoStop() }
         )
 
         showOverlay()
         updateTitle()
+    }
+
+    /** 편집기에서 요청한 캡처 전용 모드: 패널 없이 바로 셔터를 띄운다. */
+    private fun startCaptureOnly(intent: Intent) {
+        this.captureOnly = true
+        startAsForeground(withProjection = true)
+        captureSession?.dismiss(); captureSession = null
+        engine?.stop(); engine = null
+        if (!setupProjection(intent)) { stopEverything(); return }
+        isRunning = true
+        beginCapture(intent.getStringExtra(EXTRA_RETURN_MACRO_ID))
+    }
+
+    /** 실행중인 패널에 프로젝션을 공급하고, 대기중이던 작업(이미지 캡처/실행)을 이어간다. */
+    private fun provideProjection(intent: Intent) {
+        val after = pendingAfterProjection
+        pendingAfterProjection = null
+        if (!setupProjection(intent)) {
+            statusText?.text = "화면 캡처 권한이 거부됨"
+            overlay?.visibility = View.VISIBLE
+            return
+        }
+        // 엔진의 capture 참조를 갱신하기 위해 재생성
+        engine?.stop()
+        engine = MacroEngine(
+            context = this,
+            capture = capture,
+            onStatus = { s -> statusText?.text = s },
+            onFinished = { setToggleLabel(false); cancelAutoStop() }
+        )
+        after?.invoke()
+    }
+
+    /** 프로젝션이 없으면 권한 화면을 띄워 받아오고, 받은 뒤 after 를 실행한다. */
+    private fun requestProjection(after: () -> Unit) {
+        pendingAfterProjection = after
+        overlay?.visibility = View.GONE
+        val i = Intent(this, com.imagemacro.capture.ProjectionRequestActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(com.imagemacro.capture.ProjectionRequestActivity.EXTRA_PROVIDE_ONLY, true)
+        }
+        startActivity(i)
     }
 
     // ---------------- 오버레이 캡처 세션 ----------------
@@ -140,7 +208,13 @@ class MacroService : Service() {
      */
     private fun beginCapture(returnMacroId: String?, record: Boolean = false) {
         val cap = capture
-        if (cap == null) { if (!isRunning) stopSelf(); return }
+        if (cap == null) {
+            if (!isRunning) { stopSelf(); return }
+            // 화면 공유 없이 떠 있던 상태 → 이미지 작업을 위해 이제 프로젝션을 요청
+            Toast.makeText(this, "이미지 캡처를 위해 화면 공유를 한 번 허용해 주세요", Toast.LENGTH_LONG).show()
+            requestProjection { beginCapture(returnMacroId, record) }
+            return
+        }
         if (captureSession != null) return
         captureRecordMode = record
 
@@ -247,6 +321,10 @@ class MacroService : Service() {
         statusText = view.findViewById(R.id.txtStatus)
         titleText = view.findViewById(R.id.txtTitle)
         btnToggle = view.findViewById(R.id.btnToggle)
+        intervalText = view.findViewById(R.id.btnInterval)
+        repeatText = view.findViewById(R.id.btnRepeat)
+        timerText = view.findViewById(R.id.btnTimer)
+        delayText = view.findViewById(R.id.btnStartDelay)
 
         view.findViewById<View>(R.id.btnToggle).setOnClickListener { toggleRun() }
         view.findViewById<View>(R.id.btnEdit).setOnClickListener { openEditor() }
@@ -255,6 +333,11 @@ class MacroService : Service() {
         // 앱 위에서 바로 단계를 추가하는 빌드 컨트롤
         view.findViewById<View>(R.id.btnAddTap).setOnClickListener { beginPointPick() }
         view.findViewById<View>(R.id.btnAddFind).setOnClickListener { beginCapture(null, record = true) }
+        // 실행 옵션(간격/반복/예약)
+        view.findViewById<View>(R.id.btnInterval).setOnClickListener { cycleInterval() }
+        view.findViewById<View>(R.id.btnRepeat).setOnClickListener { toggleRepeat() }
+        view.findViewById<View>(R.id.btnTimer).setOnClickListener { cycleAutoStop() }
+        view.findViewById<View>(R.id.btnStartDelay).setOnClickListener { cycleStartDelay() }
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -302,21 +385,122 @@ class MacroService : Service() {
     }
 
     private fun toggleRun() {
+        // 카운트다운 대기중이면 취소
+        if (startCountdown != null) {
+            cancelStartCountdown(); setToggleLabel(false); statusText?.text = "시작 취소됨"; return
+        }
         val e = engine ?: return
         val m = macro
         if (e.isRunning) {
-            e.stop(); setToggleLabel(false); statusText?.text = "정지됨"
-        } else if (m != null && m.steps.isNotEmpty()) {
-            if (!MacroAccessibilityService.isReady()) {
-                statusText?.text = "접근성 권한 필요"
-                return
-            }
-            setToggleLabel(true)
-            e.start(m)
-        } else {
-            statusText?.text = "단계가 없습니다"
+            e.stop(); cancelAutoStop(); setToggleLabel(false); statusText?.text = "정지됨"
+            return
         }
+        if (m == null || m.steps.isEmpty()) { statusText?.text = "단계가 없습니다"; return }
+        if (!MacroAccessibilityService.isReady()) { statusText?.text = "접근성 권한 필요"; return }
+
+        // 이미지 감지를 쓰는데 화면 캡처가 없으면 먼저 프로젝션을 받는다
+        if (m.usesImageDetection() && capture == null) {
+            Toast.makeText(this, "이미지 감지를 위해 화면 공유를 한 번 허용해 주세요", Toast.LENGTH_LONG).show()
+            requestProjection { overlay?.visibility = View.VISIBLE; runWithSchedule(m) }
+            return
+        }
+        runWithSchedule(m)
     }
+
+    /** 시작 지연(예약) 카운트다운 후 실행하고, 자동 중지(예약)를 건다. */
+    private fun runWithSchedule(m: Macro) {
+        val delay = m.startDelaySec
+        if (delay <= 0) { startEngineNow(m); return }
+        btnToggle?.text = "취소"
+        var left = delay
+        val r = object : Runnable {
+            override fun run() {
+                if (left <= 0) { startCountdown = null; startEngineNow(m); return }
+                statusText?.text = "시작까지 ${left}초… (다른 앱으로 이동하세요)"
+                left--
+                mainHandler.postDelayed(this, 1000)
+            }
+        }
+        startCountdown = r
+        mainHandler.post(r)
+    }
+
+    private fun startEngineNow(m: Macro) {
+        val e = engine ?: return
+        setToggleLabel(true)
+        e.start(m)
+        if (m.autoStopSec > 0) scheduleAutoStop(m.autoStopSec)
+    }
+
+    private fun scheduleAutoStop(sec: Int) {
+        cancelAutoStop()
+        val r = Runnable {
+            autoStopRunnable = null
+            engine?.stop(); setToggleLabel(false)
+            statusText?.text = "자동 중지됨 (${sec}초 경과)"
+        }
+        autoStopRunnable = r
+        mainHandler.postDelayed(r, sec * 1000L)
+    }
+
+    private fun cancelAutoStop() {
+        autoStopRunnable?.let { mainHandler.removeCallbacks(it) }
+        autoStopRunnable = null
+    }
+
+    private fun cancelStartCountdown() {
+        startCountdown?.let { mainHandler.removeCallbacks(it) }
+        startCountdown = null
+    }
+
+    // ---------------- 실행 옵션(간격/반복/예약) ----------------
+
+    private fun cycleInterval() {
+        val m = macro ?: return
+        val idx = INTERVALS.indexOfFirst { it >= m.stepDelayMs }.let { if (it < 0) 0 else it }
+        m.stepDelayMs = INTERVALS[(idx + 1) % INTERVALS.size]
+        MacroStore.upsert(this, m); refreshOptionLabels()
+        statusText?.text = "간격 ${fmtMs(m.stepDelayMs)}"
+    }
+
+    private fun toggleRepeat() {
+        val m = macro ?: return
+        m.repeatCount = if (m.repeatCount == 0) 1 else 0   // 0=무한 ↔ 1회
+        MacroStore.upsert(this, m); refreshOptionLabels()
+        statusText?.text = if (m.repeatCount == 0) "무한 반복 (감시 모드)" else "1회 실행"
+    }
+
+    private fun cycleAutoStop() {
+        val m = macro ?: return
+        val idx = AUTO_STOPS.indexOf(m.autoStopSec).let { if (it < 0) 0 else it }
+        m.autoStopSec = AUTO_STOPS[(idx + 1) % AUTO_STOPS.size]
+        MacroStore.upsert(this, m); refreshOptionLabels()
+        statusText?.text = if (m.autoStopSec == 0) "자동 중지 끔" else "자동 중지 ${fmtSec(m.autoStopSec)} 뒤"
+    }
+
+    private fun cycleStartDelay() {
+        val m = macro ?: return
+        val idx = START_DELAYS.indexOf(m.startDelaySec).let { if (it < 0) 0 else it }
+        m.startDelaySec = START_DELAYS[(idx + 1) % START_DELAYS.size]
+        MacroStore.upsert(this, m); refreshOptionLabels()
+        statusText?.text = if (m.startDelaySec == 0) "즉시 시작" else "${m.startDelaySec}초 뒤 시작"
+    }
+
+    private fun refreshOptionLabels() {
+        val m = macro
+        intervalText?.text = "⏱ ${fmtMs(m?.stepDelayMs ?: 300)}"
+        repeatText?.text = if (m?.repeatCount == 0) "🔁 무한" else "🔁 1회"
+        timerText?.text = if (m == null || m.autoStopSec == 0) "⏰ 끔" else "⏰ ${fmtSec(m.autoStopSec)}"
+        delayText?.text = if (m == null || m.startDelaySec == 0) "▷ 즉시" else "▷ ${m.startDelaySec}s"
+    }
+
+    private fun fmtMs(ms: Long): String {
+        if (ms < 1000) return "${ms}ms"
+        val s = ms / 1000.0
+        return if (s == s.toLong().toDouble()) "${s.toLong()}s" else "${s}s"
+    }
+
+    private fun fmtSec(sec: Int): String = if (sec < 60) "${sec}s" else "${sec / 60}m"
 
     private fun setToggleLabel(running: Boolean) {
         btnToggle?.text = if (running) "■ 정지" else "▶ 시작"
@@ -324,8 +508,9 @@ class MacroService : Service() {
 
     private fun updateTitle() {
         titleText?.text = macro?.name ?: "매크로 없음"
-        statusText?.text = "준비됨"
+        statusText?.text = if (capture == null) "준비됨 (화면 공유 없음 · 좌표 모드)" else "준비됨"
         setToggleLabel(false)
+        refreshOptionLabels()
     }
 
     private fun openEditor() {
@@ -339,7 +524,7 @@ class MacroService : Service() {
 
     // ---------------- 생명주기 ----------------
 
-    private fun startAsForeground() {
+    private fun startAsForeground(withProjection: Boolean) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ch = NotificationChannel(
@@ -355,7 +540,13 @@ class MacroService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTI_ID, noti, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            // Android 14+ 는 프로젝션이 없으면 mediaProjection 유형으로 시작할 수 없어
+            // specialUse 로 띄운다 (화면 공유 없이 오버레이만).
+            val type = if (Build.VERSION.SDK_INT >= 34 && !withProjection)
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            else
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            startForeground(NOTI_ID, noti, type)
         } else {
             startForeground(NOTI_ID, noti)
         }
@@ -363,6 +554,8 @@ class MacroService : Service() {
 
     private fun stopEverything() {
         isRunning = false
+        cancelStartCountdown(); cancelAutoStop()
+        pendingAfterProjection = null
         removePointPick()
         captureSession?.dismiss(); captureSession = null
         engine?.stop(); engine = null

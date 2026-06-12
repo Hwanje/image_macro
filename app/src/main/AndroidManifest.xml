@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -50,11 +51,17 @@
             android:excludeFromRecents="true"
             android:theme="@style/Theme.Transparent" />
 
-        <!-- Foreground service: overlay control panel + screen capture + macro engine -->
+        <!-- Foreground service: overlay control panel + macro engine.
+             좌표 전용 매크로는 화면 캡처(mediaProjection) 없이 specialUse 로 동작하고,
+             이미지 감지가 필요할 때만 mediaProjection 으로 전환한다. -->
         <service
             android:name=".service.MacroService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
+            android:foregroundServiceType="mediaProjection|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="다른 앱 위 오버레이로 사용자가 지정한 탭/스와이프를 반복 실행하는 자동화 매크로" />
+        </service>
 
         <!-- Accessibility service: performs taps / swipes / global actions -->
         <service

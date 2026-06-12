@@ -19,11 +19,15 @@ class ProjectionRequestActivity : AppCompatActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val captureMode = intent.getBooleanExtra(EXTRA_CAPTURE_MODE, false)
+        val provideOnly = intent.getBooleanExtra(EXTRA_PROVIDE_ONLY, false)
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             val macroId = intent.getStringExtra(EXTRA_MACRO_ID)
             val svc = Intent(this, MacroService::class.java).apply {
-                action = if (captureMode) MacroService.ACTION_START_CAPTURE
-                         else MacroService.ACTION_START
+                action = when {
+                    provideOnly -> MacroService.ACTION_PROVIDE_PROJECTION
+                    captureMode -> MacroService.ACTION_START_CAPTURE
+                    else -> MacroService.ACTION_START
+                }
                 putExtra(MacroService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(MacroService.EXTRA_DATA, result.data)
                 if (captureMode) putExtra(MacroService.EXTRA_RETURN_MACRO_ID, macroId)
@@ -31,8 +35,8 @@ class ProjectionRequestActivity : AppCompatActivity() {
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc)
             else startService(svc)
-            // 캡처 모드면 편집기까지 통째로 내려 캡처할 다른 앱이 보이게 한다
-            if (captureMode) moveTaskToBack(true)
+            // 캡처/제공 모드면 앱을 내려 캡처할 다른 앱이 보이게 한다
+            if (captureMode || provideOnly) moveTaskToBack(true)
         } else if (captureMode) {
             CaptureBus.deliver(null)
         }
@@ -48,5 +52,6 @@ class ProjectionRequestActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_MACRO_ID = "macro_id"
         const val EXTRA_CAPTURE_MODE = "capture_mode"
+        const val EXTRA_PROVIDE_ONLY = "provide_only"  // 실행중인 서비스에 프로젝션만 공급
     }
 }
