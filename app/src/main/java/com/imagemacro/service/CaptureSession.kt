@@ -33,7 +33,8 @@ class CaptureSession(
     private val context: Context,
     private val windowManager: WindowManager,
     private val capture: ScreenGrabber,
-    private val onFinished: (String?) -> Unit   // 저장된 템플릿 파일명, 취소면 null
+    private val onFinished: (String?) -> Unit,  // 저장된 템플릿 파일명, 취소면 null
+    private val onError: ((String) -> Unit)? = null  // 캡처 실패 시(있으면 토스트 대신 호출)
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var shutter: View? = null
@@ -105,8 +106,17 @@ class CaptureSession(
                     removeShutter(); showCrop(bmp)
                 } else {
                     val why = MacroAccessibilityService.instance?.screenshotErrorText()
-                    Toast.makeText(context, why ?: "캡처 실패 — 다시 시도하세요", Toast.LENGTH_LONG).show()
-                    shutter?.visibility = View.VISIBLE
+                        ?: "캡처 실패 — 다시 시도하세요"
+                    val handler = onError
+                    if (handler != null) {
+                        // 소유자(서비스)가 처리 — 예: 화면 공유 방식으로 전환 후 재시도
+                        finished = true
+                        removeShutter(); removeCrop()
+                        handler(why)
+                    } else {
+                        Toast.makeText(context, why, Toast.LENGTH_LONG).show()
+                        shutter?.visibility = View.VISIBLE
+                    }
                 }
             }
         }.start()

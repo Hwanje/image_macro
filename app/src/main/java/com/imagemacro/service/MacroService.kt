@@ -77,6 +77,7 @@ class MacroService : Service() {
     private var stepHeader: TextView? = null
     private var macroPanel: View? = null            // 매크로 선택 패널
     private var macroListView: LinearLayout? = null
+    private var preferProjection = false            // true=화면 공유 방식, false=접근성 캡처
 
     companion object {
         const val ACTION_START = "start"
@@ -96,6 +97,9 @@ class MacroService : Service() {
         private const val CHANNEL_ID = "macro_fg"
         private const val NOTI_ID = 1001
 
+        private const val PREFS = "imagemacro_prefs"
+        private const val KEY_PREFER_PROJECTION = "prefer_projection"
+
         @Volatile var isRunning = false; private set
     }
 
@@ -104,6 +108,8 @@ class MacroService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        preferProjection = getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getBoolean(KEY_PREFER_PROJECTION, false)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -128,11 +134,13 @@ class MacroService : Service() {
         val data: Intent? = intent.getParcelableExtra(EXTRA_DATA)
         if (data == null) return false
 
+        // ⚠️ Android 14+ 권장 순서: 사용자 동의 직후 mediaProjection 유형으로 FGS 를 먼저
+        //    띄운 뒤 getMediaProjection / createVirtualDisplay 를 호출해야 한다.
+        //    (specialUse 상태에서 가상디스플레이를 만들면 SecurityException → 앱이 튕긴다)
+        startAsForeground(withProjection = true)
         val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projection = mpm.getMediaProjection(code, data) ?: return false
         capture = ScreenCaptureManager(this, projection!!).also { it.start() }
-        // 프로젝션을 가졌으니 FGS 유형을 mediaProjection 으로 갱신
-        startAsForeground(withProjection = true)
         return true
     }
 
@@ -181,6 +189,8 @@ class MacroService : Service() {
      */
     private fun ensureGrabber(): Boolean {
         if (capture != null) return true
+        // 화면 공유 방식을 쓰기로 했으면 접근성 캡처를 건너뛰고 false → 호출부가 프로젝션을 요청
+        if (preferProjection) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && MacroAccessibilityService.isReady()) {
             capture = AccessibilityScreenGrabber()
             rebuildEngine()
@@ -188,6 +198,17 @@ class MacroService : Service() {
             return true
         }
         return false
+    }
+
+    /** 캡처 방식 전환(접근성 ↔ 화면 공유). 현재 캡처 수단을 비워 다음 작업에서 재확보. */
+    private fun setPreferProjection(value: Boolean) {
+        preferProjection = value
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_PREFER_PROJECTION, value).apply()
+        capture?.release(); capture = null
+        try { projection?.stop() } catch (_: Exception) {}
+        projection = null
+        rebuildEngine()
     }
 
     /** 편집기에서 요청한 캡처 전용 모드: 패널 없이 바로 셔터를 띄운다. */
@@ -255,7 +276,7 @@ class MacroService : Service() {
         }
         overlay?.visibility = View.GONE
 
-        captureSession = CaptureSession(this, windowManager, cap) { name ->
+        captureSession = CaptureSession(this, windowManager, cap, onFinished = { name ->
             captureSession = null
             val wasRec = captureRec
             captureRec = Rec.NONE
@@ -276,7 +297,21 @@ class MacroService : Service() {
             if (returnMacroId != null) bringEditorToFront(returnMacroId)
             if (this.captureOnly) stopEverything()
             else overlay?.visibility = View.VISIBLE
-        }.also { it.start() }
+        }, onError = { why ->
+            captureSession = null
+            // 접근성 캡처가 실패했고 아직 화면 공유로 안 바꿨다면 → 자동 전환 후 재시도
+            if (cap is AccessibilityScreenGrabber && !preferProjection) {
+                Toast.makeText(this,
+                    "접근성 캡처가 안 돼요. 화면 공유 방식으로 전환합니다 (한 번만 허용)",
+                    Toast.LENGTH_LONG).show()
+                setPreferProjection(true)
+                beginCapture(returnMacroId, rec)
+            } else {
+                captureRec = Rec.NONE
+                Toast.makeText(this, why, Toast.LENGTH_LONG).show()
+                overlay?.visibility = View.VISIBLE
+            }
+        }).also { it.start() }
     }
 
     // ---------------- 앱 위에서 단계 만들기 (오버레이 빌더) ----------------
@@ -590,6 +625,30 @@ class MacroService : Service() {
     private fun rebuildMacroList() {
         val list = macroListView ?: return
         list.removeAllViews()
+
+        // 캡처 방식 토글 (접근성 캡처 ↔ 화면 공유)
+        list.addView(TextView(this).apply {
+            text = "캡처 방식: " + (if (preferProjection) "🖥 화면 공유 (클리커 앱 방식)" else "♿ 접근성 캡처")
+            setTextColor(android.graphics.Color.parseColor("#4FC3F7"))
+            textSize = 13f
+            setBackgroundResource(R.drawable.btn_pill)
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            setOnClickListener {
+                setPreferProjection(!preferProjection)
+                rebuildMacroList()
+                Toast.makeText(this@MacroService,
+                    if (preferProjection) "화면 공유 방식: 다음 캡처/실행 때 한 번 허용하세요"
+                    else "접근성 캡처 방식으로 전환했습니다",
+                    Toast.LENGTH_SHORT).show()
+            }
+        })
+        list.addView(View(this).apply {
+            setBackgroundColor(android.graphics.Color.parseColor("#22FFFFFF"))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)
+            ).apply { topMargin = dp(6); bottomMargin = dp(2) }
+        })
+
         val all = MacroStore.load(this)
         val curId = macro?.id
         if (all.isEmpty()) {
